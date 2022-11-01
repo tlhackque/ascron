@@ -1,0 +1,978 @@
+#!/usr/bin/perl
+
+my $copyright =
+    "Copyright (c) 2022 Timothe Litt litt _at acm.org\nUse --man for license.";
+
+# Run a job once, in cron context
+
+use warnings;
+use strict;
+
+our $VERSION = 'V1.000';
+
+use Cwd( qw/realpath getcwd/ );
+use Errno( qw/EAGAIN/ );
+use Fcntl( qw/:seek/ );
+use File::Basename;
+use File::Temp;
+use Getopt::Long( qw(:config bundling) );
+use POSIX( qw/:sys_wait_h setlocale LC_ALL LC_COLLATE strftime/ );
+use Sys::Hostname;
+use Text::Abbrev;
+
+sub dojob;
+sub debug;
+sub procsts;
+
+my $SELF = basename $0;
+my @argv = @ARGV;
+
+my( $usertable, @systables ) = ( '/var/spool/cron/%s', '/etc/crontab', '/etc/cron.d/*' );
+my $systableRE  = join( '|', @systables );
+my $systable    = '*system*';
+my $mailer      = '/usr/lib/sendmail';
+my $mailcmd     = "%s -i -F'Cron Daemon' -f %s -odi -oem %s";
+my $localtime   = "/etc/localtime";        # Olson timezone; zoneinfo line or file
+my $timezone    = "/etc/timezone";         # Debian timezone - contains timezone
+my $defaultUser = getpwuid( $> );
+my %emptyenv    = ( SHELL => '/bin/sh', );
+
+$systableRE = qr/^($systableRE)$/;
+$emptyenv{TZ} = $ENV{TZ} if( defined $ENV{TZ} );
+
+my( $log, $havegtod, $startt, $startu );
+
+# Parse (and default) the command line
+my(   $debug, $job, $match, $help, $list, $locale, $man, $sendmail, $table, $format,
+      $notz,  $user,
+      $version );
+
+my %formats  = ( abbrev( qw/system user/ ) );
+my %sendmail = ( abbrev( qw/discard display send/ ) );
+
+if( defined $ENV{HOME} && open( my $ini, "<", "$ENV{HOME}/.$SELF" ) ) {
+    require Text::ParseWords;
+    my @ini;
+    while( <$ini> ) {
+        s/\s*#.*$//;
+        s/^\s+//;
+        s/\s+$//;
+        next unless( length );
+        push @ini, Text::ParseWords::parse_line( '\s+', 0, $_ );
+    }
+    close( $ini );
+    unshift @ARGV, @ini;
+    unshift @argv, @ini;
+}
+
+GetOptions(
+        "debug|d=s"  => \$debug,
+        "help|h"     => \$help,
+        "job|j"      => \$job,
+        'list|l'     => \$list,
+        'locale|L=s' => \$locale,
+        'man'        => \$man,
+        'match|m=i'  => \$match,
+        "table|t=s"  => \$table,
+        "user|u=s"   => \$user,
+        "format|f=s" => sub {
+            my( $n, $v ) = @_;
+            if( ( my $k = $formats{$v} ) ) {
+                $format = $k;
+        } else {
+                die( "--format must be 'system' or 'user'\n" );
+            }
+            return;
+        },
+        "mail-action|M=s" => sub {
+            my( $n, $v ) = @_;
+            if( ( my $k = $sendmail{$v} ) ) {
+                $sendmail = $k;
+        } else {
+                die( "--mail-action must be 'discard', 'display', or 'send'\n" );
+            }
+            return;
+        },
+        "system|s" => sub {
+            $table = $systable;
+            return;
+        },
+        "tz|z=s"  => sub { $emptyenv{TZ} = $_[1]; undef $notz; },
+        "notz|Z"  => sub { delete $emptyenv{TZ}; $notz = 1; },
+        "version" => \$version,
+          ) or die( "Error in command\n" );
+
+# Handle help, man, & version
+if( $help || $man ) {
+    eval {
+            no warnings 'once';
+            $Pod::Usage::Formatter = 'Pod::Text::Termcap';
+            require Pod::Usage;
+        } or
+        die( "Install Pod::Usage or use 'perldoc $0'\n" );
+    Pod::Usage::pod2usage( 1 )                            if $help;
+    Pod::Usage::pod2usage( -exitval => 0, -verbose => 2 ) if $man;
+}
+
+if( $version ) {
+    printf( "%s version %s\n%s\n", $SELF, $VERSION, $copyright );
+    exit 0;
+}
+
+# Setup debug logging
+
+if( defined $debug ) {
+    $havegtod = eval {
+            require Time::HiRes;
+            Time::HiRes->import( qw/gettimeofday/ );
+            return 1;
+    };
+    ( $startt, $startu ) = $havegtod ? gettimeofday() : ( time, 0 );
+    if( $debug eq "" || $debug eq '-' ) {
+        $debug = \*STDERR;
+    } else {
+        open( my $df, '>', $debug ) or do {
+                printf STDERR ( "Debug: %s:%s\n", $debug, $! );
+                exit 1;
+        };
+        printf STDERR ( "Debug logging to %s\n", $debug );
+        $log   = realpath( $debug );
+        $debug = $df;
+    }
+    debug( strftime( "%a %d-%b-%Y", localtime( time ) ) );
+    debug( "%s %s\n", $SELF, join( ' ', @argv ) );
+}
+
+# Try to find a reasonable value for TZ
+# It shouldn't be this hard...
+unless( $notz || exists $emptyenv{TZ} ) {
+    my $tz;
+    if( open( my $z, '<', $timezone ) ) {
+        $tz = <$z>;
+        chomp $tz;
+        close( $z );
+        debug( "TZ set from $timezone" );
+    }
+    unless( defined $tz && length $tz ) {
+
+        # busybox /bin/sh prints 'no such file' for command before redirects.
+        # Don't try to run timedatectl unless we find it on $PATH.
+        my $z;
+        $z = -x "$_/timedatectl" and last foreach( split /:/, $ENV{PATH} );
+        $z = qx(2>/dev/null timedatectl show --property=Timezone) if( $z );
+
+        if( $z && $z =~ m,^Timezone=(.*)$, && length $1 ) {
+            $tz = $1;
+            debug( "TZ set from timedatectl" );
+        } elsif( -l $localtime ) {
+            my $syml = $localtime;
+            my $wd   = getcwd;
+            $syml = "$wd/$syml" if( substr( $syml, 0, 1 ) ne '/' );
+            while(     -l $syml
+                    && defined( $z = eval { return readlink( $syml ); } )
+                    && length $z ) {
+                if( substr( $z, 0, 1 ) eq '/' ) {
+                    $syml = $z;
+                } else {
+                    $syml = dirname( $syml ) . "/$z";
+                }
+            }
+            if( ( $syml =~ s,^.*zoneinfo/,, ) && length $syml ) {
+                $tz = $syml;
+                debug( "TZ set from $localtime" );
+            }
+        }
+        if( !defined $tz && -f $localtime && open( my $z, '<', $localtime ) ) {
+            my $s = -s $z;
+            seek( $z, -256, SEEK_END ) if( defined $s && $s > 2556 );
+            undef $tz;
+            $tz = $_ while( <$z> );
+            close( $z );
+            if( defined $tz && $tz =~ m!^[^:/0-9,+-][^0-9,+-]{2,}[+-]?\d! ) {
+                chomp $tz;
+                debug( "TZ set from $localtime" );
+            } else {
+                $tz = ":$localtime";
+                debug( "TZ set to :$localtime" );
+            }
+        }
+    }
+    if( defined $tz && length $tz ) {
+        $emptyenv{TZ} = $tz;
+    } else {
+        debug( "Unable to determine TZ" );
+    }
+}
+
+# Handle locale - cron uses the system defaults, except for COLLATE, but we don't
+# know what those are for daemons.  The user may have environment variables or settings.
+# The system default is probably NOT Perl's "C"; perhaps UTF-8.
+#<<<
+my $charset = eval {
+    require locale;
+    if( !defined $locale ) {  # Use the user/system's, e.g. LC_ALL or LANG
+        setlocale( LC_ALL, "" );
+    } elsif( !defined setlocale( LC_ALL, $locale ) ) {
+        debug( "Unable to set locale '%s'\n", $locale );
+        printf STDERR ( "Unable to set locale '%s'\n", $locale );
+        exit 1;
+    } else {
+        debug( "Locale set to '%s'\n", $locale );
+    }
+    setlocale( LC_COLLATE, "C" );
+    require I18N::Langinfo;
+    I18N::Langinfo->import( qw/langinfo CODESET/ );
+    my $cs = langinfo( CODESET() );
+    return $cs if( defined $cs && lc $cs ne 'ansi_x3.4-1968' );  # crond's match is case-sensitive, but shouldn't be.
+    return;
+} || 'US_ASCII';
+#>>>
+debug( "Codeset %s selected\n", $charset );  # Used for the default Content-Type header
+
+# Output handling
+$sendmail = 'send' unless( defined $sendmail );
+
+# Reasonable defaults for the inter-related tab, format and user
+if( defined $table && ( $table eq $systable || $table =~ /$systableRE/ ) ) {
+    $format = 'system';
+} elsif( !defined $table && !defined $format ) {
+    if( defined $user ) {
+        $table  = sprintf( $usertable, $user );
+        $format = 'user';
+    } else {
+        $format = 'system';
+    }
+} elsif( !defined $table ) {
+    if( $format eq 'system' ) {
+        if( !defined $job ) {
+            $table  = $systables[0];
+            $format = 'system';
+        }
+    } elsif( defined $user ) {
+        $table  = sprintf( $usertable, $user );
+        $table  = sprintf( $usertable, $defaultUser ) unless( -f $table );
+        $format = 'user';
+    } else {
+        $table  = sprintf( $usertable, $defaultUser );
+        $format = 'user';
+    }
+} elsif( !defined $format ) {
+    $format = 'user';
+    $table  = sprintf( $usertable, defined $user ? $user : $defaultUser )
+        unless( defined $table );
+}
+
+# Job matching and environment
+my( $matchRE, $jobcmd, $hitnum, %env );
+$hitnum = 0;
+%env    = %emptyenv;
+
+$match = 1 unless( defined $match );
+
+if( defined $job ) {  # Job from a crontab
+    unless( @ARGV ) {
+        printf STDERR ( "--job requires one or more job strings to match\n" );
+        exit 1;
+    }
+    $matchRE = join( '|', map { "(?:$_)" } @ARGV );  # ?? map { "(?:\Q$_\E)" } @ARGV;
+    my $mat = eval { qr/$matchRE/ } or do {
+            printf STDERR ( "Invalid match expression: %s\n", $matchRE );
+            exit 1;
+    };
+    $matchRE = $mat;
+} else {  # Job from command line
+    die( "--list only applies to --job\n" ) if( $list );
+
+    $jobcmd = join( ' ', @ARGV );
+}
+
+if( $debug ) {
+    debug( "Job location: %s\n", defined $job ? "crontab" : "command line" );
+    my %syms = ( table       => $table, format => $format, user => $user,
+                 defaultUser => $defaultUser,
+                 matchRE     => $matchRE, jobcmd => $jobcmd );
+    foreach my $sym ( sort keys %syms ) {
+        debug( "%s => '%s'", $sym, defined $syms{$sym} ? $syms{$sym} : 'undef' );
+    }
+}
+
+# Process table(s) for environment and (if requested) jobs
+TABLE:
+foreach my $file ( defined $table
+                   && $table ne $systable ? $table : glob join( ' ', @systables ) ) {
+
+    debug( "Processing %s", $file );
+    %env = %emptyenv;
+
+    open( my $tbl, '<', $file ) or do {
+            printf STDERR ( "Can't read %s - %s\n", $file, $! );
+            debug( "%s: %s", $file, $! );
+            next TABLE;
+    };
+
+    while( <$tbl> ) {
+
+        # Comments, blank lines
+        next if( /^\s*(?:#.*)?$/ );
+
+        # Quoted assignments, unquoted assignments, job definitions
+        if( /^\s*(\w+)\s*=\s*(['"'])(.*)\2$/ ) {
+            $env{$1} = $3;
+            debug( "$.: $1=$3" );
+        } elsif( /^\s*(\w+)\s*=\s*(.*?)\s*$/ ) {
+            $env{$1} = $2;
+            debug( "$.: $1=$2" );
+        } elsif( $job ) {
+
+            # Match job's command, ignoring schedule and (when present) user
+            my( $min, $hr, $dom, $mon, $dow, $usr, $cmd );
+            s/^\s*//;
+            chomp;
+            if( $format eq 'system' ) {
+                ( $min, $hr, $dom, $mon, $dow, $usr, $cmd ) =
+                    split( /\s+/, $_, 7 );
+                next unless( defined $cmd );
+                next if( defined $user && $usr ne $user );
+            } else {
+                ( $min, $hr, $dom, $mon, $dow, $cmd ) = split( /\s+/, $_, 6 );
+                next unless( defined $cmd );
+            }
+
+            # Remove any stdin data & collapse any quoted \ or % in the command
+            $cmd =~ s/([^\\])%.*$/$1/;
+            $cmd =~ s/(?:\\)([%\\])/$1/g;
+
+            if( $cmd =~ /$matchRE/ ) {
+                ++$hitnum;
+                printf( "%3u)%s:%u %s\n", $hitnum, $file, $., $_ );
+                debug( "%u)%s:%u %s", $hitnum, $file, $., $_ );
+                if( $match == $hitnum ) {
+                    next if( $list );
+                    dojob(  $cmd,
+                            defined $usr ? $usr : defined $user ? $user : $defaultUser,
+                            \%env );
+                    last TABLE;
+                }
+            }
+        }
+    }  # End of this crontab
+    close( $tbl );
+}  # End of crontabs
+
+my $sts = 0;
+if( defined $job ) {
+    unless( $hitnum ) {
+        my $where = defined $table ? $table : join( ' ', glob join( ' ', @systables ) );
+        printf STDERR ( "No match for %s in %s\n", $matchRE, $where );
+        debug( "No match for %s in %s", $matchRE, $where );
+        $sts = 1;
+    }
+} else {
+
+    # Execute from command line
+    dojob( $jobcmd, defined $user ? $user : $defaultUser, \%env );
+}
+if( $debug ) {
+    my( $endt, $endu ) = $havegtod ? gettimeofday() : ( time, 0 );
+    if( $endu < $startu ) {
+        $endt--;
+        $endu += 1_000_000;
+    }
+    $endu -= $startu;
+    $endt -= $startt;
+    if( $endt < 86400 ) {
+        debug(  "Elapsed time: %s\n",
+                strftime( '%T', gmtime $endt ) .
+                ( $havegtod ? sprintf( '.%06u', $endu ) : '' ) );
+    } else {
+        debug(  "Elapsed time: %ud %s\n", $endt / 86400,
+                strftime( '%T', gmtime( $endt % 86400 ) ) .
+                ( $havegtod ? sprintf( '.%06u', $endu ) : '' ) );
+    }
+}
+exit $sts;
+
+# Execute identified job
+sub dojob {
+    my( $cmd, $user, $env ) = @_;
+
+    $cmd = '' unless( defined $cmd );
+
+    debug( "Processng job %s", $cmd );
+
+    # Separate command from any stdin data and handle % => \n and \%, \\ substitutions
+    my @cmd = split( //, $cmd );
+    $cmd = '';
+    my $stdin;
+    my $p = \$cmd;
+
+    while( @cmd ) {
+        my $c = shift @cmd;
+        if( $c eq '\\' && @cmd ) {
+            $c = shift @cmd;
+            if( $c eq '\\' || $c eq '%' ) {
+                $$p .= $c;
+            } else {
+                $$p .= "\\$c";
+            }
+        } elsif( $c eq '%' ) {
+            $$p .= "\n";
+            $p = \$stdin;
+        } else {
+            $$p .= $c;
+        }
+    }
+    unless( defined $cmd && length $cmd ) {
+        printf STDERR ( "No command found in job\n" );
+        debug( "No command found in job" );
+        exit 1;
+    }
+
+    # Lookup the job's user & setup environment that depends on user
+    my( $name, $pwd, $uid, $gid, $quota, $comment, $gcos, $home, $shell ) =
+        getpwnam( $user );
+    unless( defined $name ) {
+        printf STDERR ( "%s: no such user\n", $user );
+        debug( "%s: no such user - %s", $user, $! );
+        exit 1;
+    }
+
+    # These variables don't carry forward to subsequent jobs.
+    # Force LOGNAME (& USER) from /etc/passwd (table can not override LOGNAME)
+    # Default HOME from /etc/passwd
+    # Default PATH based on UID.
+    # SHELL default is already setup - NOT from /etc/passwd
+
+    $env         = { %env, USER => $user, LOGNAME => $user };
+    $env->{HOME} = $home unless( exists $env->{HOME} );
+    $env->{PATH} = $uid == 0 ? '/usr/sbin:/usr/bin:/sbin:/bin' : '/usr/bin:/bin'
+        unless( exists $env->{PATH} );
+
+    my $groups;
+    if( $> == 0 ) {
+        my %groups = ( $gid => 1 );
+        while( my( $gn, $gp, $gi, $gm ) = getgrent() ) {
+            my %m = map { $_ => 1 } split( /\s/, $gm );
+            $groups{$gi} = 1 if( exists $m{$name} && $gi ne 0 );
+        }
+        $groups = join( ' ', $gid, $gid,
+                        map { $_ != $gid ? $_ : () } sort { $a <=> $b } keys %groups );
+    }
+    if( $debug ) {
+        debug( "Environment" );
+        foreach my $e ( sort keys %$env ) {
+            debug( " $e = '$env->{$e}'" );
+        }
+    }
+    chomp $cmd;
+
+    # Temp files for job's stdio
+    my $jout = File::Temp->new( UNLINK => 1, Suffix => '.crono' );
+    my $jin;
+    if( defined $stdin ) {
+        $jin = File::Temp->new( UNLINK => 1, Suffix => '.croni' );
+        chomp $stdin;
+        $stdin .= "\n";
+        print $jin ( $stdin );
+        seek( $jin, 0, SEEK_SET );
+        debug( "Data ready for <stdin>, length %u", length $stdin );
+    } else {
+        open( $jin, '<', '/dev/null' ) or die( "No /dev/null\n" );
+    }
+
+    my( $pid, $forksts );
+    $forksts = 0;
+FORK: {
+        if( ( $pid = fork ) ) { last FORK; }
+        if( defined $pid ) {
+            %ENV = %$env;
+
+            if( $> == 0 ) {
+                $! = 0;
+                $( = $gid;
+                $) = $groups;
+                $> = $< = $uid;
+                if( $! ) {
+                    printf STDERR ( "Unable to assume %s's identity: %s\n", $user, $! );
+                    exit 1;
+                }
+            }
+            chdir( $ENV{HOME} ) || die( "chdir: $!\n" );
+
+            STDOUT->flush;
+            STDERR->flush;
+
+            close( STDOUT );
+            open( STDOUT, '>&' . fileno( $jout ) ) or die( "STDOUT: $!\n" );
+            STDOUT->autoflush( 1 );
+            close( STDIN );
+            open( STDIN, '<&' . fileno( $jin ) ) or die( "STDIN: $!\n" );
+
+            close( STDERR );
+            open( STDERR, '>&' . fileno( STDOUT ) ) or die( "STDERR: $!\n" );
+            STDERR->autoflush( 1 );
+
+            exec { $ENV{SHELL} } ( $ENV{SHELL}, '-c', $cmd );
+            die( "Can't exec $ENV{SHELL} with $cmd\n" );
+        } elsif( $! == EAGAIN ) {
+            sleep 6;
+            debug( "Retrying fork" );
+            redo FORK;
+        } else {
+            $forksts = +$!;
+            printf STDERR ( "fork: %s\n", $! );
+            debug( "fork failed: $!" );
+            last FORK;
+        }
+    }
+
+    # Parent continues, wait for child
+    my $sts = -1;
+    if( defined $pid ) {
+        if( $debug && $> == 0 ) {
+            my @g = split( / /, $groups );
+            shift @g;
+            foreach my $g ( @g ) {
+                my $n = getgrgid( $g );
+                $g = defined $n ? sprintf( '%u(%s)', $g, $n ) : $g;
+            }
+            debug(  "Job running as PID %u, uid=%u(%s), gid=%s, groups=%s", $pid, $uid,
+                    $name, $g[0], join( ',', @g ) );
+        } else {
+            debug( "Job running as PID %u", $pid );
+        }
+        waitpid( $pid, 0 );
+        $sts = $? >> 8;
+        debug( "Job done, result:%s", $? ? procsts : " success" );
+    }
+    close( $jin );
+
+    # Collect any output and its disposition
+    seek( $jout, 0, SEEK_END );
+    my $wantmail = ( exists $env->{MAILTO} && length $env->{MAILTO} )
+        || !exists $env->{MAILTO};
+    if( $sendmail eq 'discard' ) {
+        debug( "Discarding mail" ) if( tell( $jout ) != 0 && $wantmail );
+        $wantmail = 0;
+    }
+    unless( tell( $jout ) != 0 && $wantmail ) {
+        close( $jout );
+        return;
+    }
+    debug( "Generating e-mail" );
+
+    # Handle envelope variables
+    my( $mailto, $mailfrom );
+    if( exists $env->{MAILTO} ) {
+        $mailto = $env->{MAILTO};
+        $mailto =~ s/\$(?:\{(\w+)\}|(\w+))/my $v = $env->{$1||$2}; defined $v? $v : ''/ge;
+    } else {
+        $mailto = $user;
+    }
+
+    # Envelope sender
+    if( exists $env->{MAILFROM} && length $env->{MAILFROM} ) {
+        $mailfrom = $env->{MAILFROM};
+        $mailfrom =~
+            s/\$(?:\{(\w+)\}|(\w+))/my $v = $env->{$1||$2}; defined $v? $v : ''/ge;
+    } else {
+        $mailfrom = 'root';
+    }
+
+    my $mp =
+        $sendmail eq 'display'
+        ? 'cat'
+        : sprintf( $mailcmd, $mailer, $mailfrom, $mailto );
+    open( my $mail, '|-', $mp ) or
+        do {
+            debug( "Can't start %s", $mp );
+            die( "Can't send mail to %mailto : $!\n" );
+        };
+
+    $SIG{PIPE} = "IGNORE";
+
+    seek( $jout, 0, SEEK_SET );
+
+    # Generate mail headers
+    printf $mail ( <<"HDR", $defaultUser, $mailto );
+From: %s (Cron Daemon)
+To: %s
+HDR
+
+    my $hostname = hostname;
+    my $hn       = $hostname;
+    $hn =~ s/^([^.]+)\..*$/$1/;
+
+    if( exists $env->{MAILSUBJECT} && length $env->{MAILSUBJECT} ) {
+        my $subj = $env->{MAILSUBJECT};
+        $subj =~ s/%user%/$env->{USER}/g;
+        $subj =~ s/%hostname%/$hn/g;
+        $subj =~ s/%cmd%/$cmd/g;
+        $subj =~ s/%status%/$sts? "failed" : "success"/ge;
+        $subj =~ s/%forkstatus%/$forksts? "failed" : "success"/ge;
+        $subj =~ s/%fqdn%/$hostname/g;
+        printf $mail ( "Subject: %s\n", $subj );
+    } else {
+        printf $mail ( "Subject: Cron <%s@%s> %s%s\n",
+                       $user, $hn, $cmd, $sts ? " (failed)" : "" );
+    }
+
+    my $ct = $env->{CONTENT_TYPE};
+    if( defined $ct && length $ct ) {
+        $ct =~ s/\n/ /g;
+    } else {
+        $ct = sprintf( "text/plain; charset=%s", $charset );
+    }
+    printf $mail ( "Content-Type: %s\n", $ct );
+
+    my $te = $env->{CONTENT_TRANSFER_ENCODING};
+    if( defined $te && length $te ) {
+        $te =~ s/\n/ /g;
+        printf $mail ( "Content-Transfer-Encoding: %s\n", $te );
+    }
+    for my $e ( sort keys %$env ) {
+        printf $mail ( "X-Cron-Env: <%s=%s>\n", $e, $env->{$e} );
+    }
+    printf $mail ( "X-ascron-Logfile: %s %s\n", $log,
+                   strftime( "%d-%b-%Y %T", localtime( time ) ) )
+        if( defined $log );
+    print $mail ( "\n" );
+
+    # Add body & dispatch
+    print $mail ( $_ ) while( <$jout> );
+    unless( close( $mail ) ) {
+        my $reason = '';
+        if( $! != 0 ) {
+            $reason = " $!";
+        } else {
+            $reason = procsts;
+        }
+        $reason = sprintf( "%s:%s\n", $sendmail eq 'display' ? 'cat' : $mailer, $reason );
+        debug( $reason );
+        die( $reason );
+    }
+    debug( $sendmail eq 'display' ? "Mail would be sent" : "Mail sent" );
+    close( $jout );
+
+    return;
+}
+
+# Debug log writer
+sub debug {
+    my $fmt = shift;
+
+    return unless( defined $debug );
+
+    my( $sec, $us ) = $havegtod ? gettimeofday() : ( time, 0 );
+    my $ts = strftime( '%T', localtime $sec );
+    $ts .= sprintf( '.%06u', $us ) if( $havegtod );
+
+    chomp $fmt;
+    $fmt .= "\n";
+    return printf $debug ( "%s: %s", $ts, $fmt ) unless( @_ );
+    return printf $debug ( "%s: %s", $ts, sprintf( $fmt, @_ ) );
+}
+
+# Decode process exit status
+sub procsts {
+    my $result = '';
+
+    if( $? == -1 ) {
+        $result = ' Unknown';
+    } else {
+        if( $? & 127 ) {
+            require Config;
+            my $n = ( split( ' ', $Config::Config{sig_name} ) )[ $? & 127 ] || '??';
+            $result .= sprintf( " killed by signal %u (%s)", $? & 127, $n );
+        }
+        $result .= sprintf( " exit code %d", $? >> 8 ) if( $? >> 8 );
+        $result .= " core dumped"                      if( $? & 128 );
+    }
+    return $result;
+}
+
+__END__
+
+=pod
+
+=head1 NAME
+
+ascron - Run cron jobs from a terminal
+
+=head1 SYNOPSIS
+
+ ascron   command | job-regexp
+           --format  --job    --list    --mail-action --locale --match
+           --system  --table  --user    --debug=file  --tz      --notz
+           --help    --man    --version
+
+=head1 DESCRIPTION
+
+I<ascron> runs a command in the environment it would have if run by (Vixie) I<crond>, without
+the difficulties of editing a I<crontab> and waiting for I<crond> to notice it.
+
+I<ascron> can select jobs from any installed I<crontab> (user or system), from an uninstalled
+I<crontab>, or can run a job defined on the command line.
+
+I<ascron> sets up the environment using the same process as I<crond> does when reading I<crontab>s.
+
+I<ascron> obeys the same enviroment variables as I<crond> for determining the SHELL, PATH, and output
+disposition.
+
+Additionally, I<ascron> allows the job's output to be sent to stdout, e-mail, or discarded,.  E-mail
+is sent exactly as I<crond> would, obeying the crontab's environment variables.
+
+When running jobs, I<ascron> will (if run as root) run them as the appropriate user, setting the job's
+B<UID>, B<GID>, and groups as specified.
+
+See B<EXAMPLES> for how these interact.
+
+=head1 OPTIONS
+
+The following options are used to select the I<crontab>(s) searched, and the job to be run.
+
+B<system> I<crontabs> include the user under which a job runs.  These include F</etc/crontab> and F</etc/cron.d/*>.
+B<user> I<crontabs> do not include the user.  The user is implied by the Icrontab>'s location or by the B<--format> option.  The user may also be specified by the B<--user> option.
+
+Options contained in F<~/.ascron> will be applied before any specified on the command line.
+
+=over 4
+
+=item B<-d> B<--debug>=F<file>
+
+Writes a detailed log of processing events to F<file>.  F<file> may be '-' for F<stderr>.
+
+While intended for debugging I<ascron>, some of the detail may be helpful for understanding how I<cron> processes a job.
+
+=item B<-f> B<--format>=I<system>|I<user> 
+
+Specifies the format of the I<crontab>(s) read by the command.
+
+=item B<-j> B<--job>
+
+Specifies the job(s) to be located in the I<crontab>(s).  The command arguments are unanchored regular expressions that match each I<crontab> command.  If more than one argument is specified, they are combined with I<or>; that is, a command is selected if any of the arguments matches.  By default, the first matching command will be used, but B<--match> can specify a subsequent match.
+
+If B<--job> is not specified, the command is specified by the command line arguments.
+
+=item B<-l> B<--list>
+
+With B<--job>, lists all matching jobs (and does not execute any).  Useful with multiple matches to determine a value of B<--match> that will select the desired job.
+
+=item B<-M> B<--mail-action>=I<discard>|I<display>|I<send>
+
+Output on F<stdout> or F<stderr> from I<cron> jobs is (usually) e-mailed; the destination, source, subject, and format are controlled by environment variables set om tje I<crontab>.
+
+By default, I<ascron> faithfully emulates this behavior -- which can be inconvenient for debugging jobs.  B<--mail-action> can override the default action so that the mail message is displayed (on F<stdout>) or discarded.
+
+=item B<-t> B<--table>=F<file>
+
+Selects the I<crontab> file used to extract environment variables, and (with B<--job>) the command.
+
+Note that without B<--job>, the job defined on the command line is processed as if it is located at the end of the I<crontab>.  Thus, if an environment variable is re-defined in a I<crontab>, the last definition is used.
+
+=item B<-u> B<--user>=I<name>
+
+Specifies the username to be matched when locating a job or table; under which the job executes.
+
+If a username is required, but not determined implicitly or by B<--user>, the username is obtained from the opertor's (effective) I<UID>.
+
+=item B<-m> B<--match>=I<n>
+
+Specifies that the I<n>th matching job is to be used.  The first match is numbered 1.
+
+=item B<-z> B<--tz>=i<zone>  B<-Z> B<--notz>
+
+I<crond> implementations vary considerably in whether jobs have B<TZ> (the timezone) in their environment, and if they do, where it comes from and what it contains.
+
+I<ascron> attempts to set B<TZ> from its environment, or failing that from several system commands and files.
+
+To specify the value of B<TZ> for I<ascron> jobs, use B<--tz>=I<zone>, where I<zone> can be any string (but should be what your I<crond> provides).
+
+To omit B<TZ>, use B<--notz>.
+
+=item B<-L> B<--locale>=I<specifier>
+
+Specifies the locale from which the default codeset for e-mails is determined.  See L<Subtleties>, below for details.
+
+=item B<--version>
+
+Displays the version number of I<ascron>.
+
+=item B<--help>
+
+Displays the help sections of the manual.
+
+=item B<--man>
+
+Displays the manual.
+
+
+=back
+
+=head1 Subtleties
+
+There are two things that I<ascron> can't or doesn't emulate.
+
+=head2 Locale considerations
+
+By default, the operator's locale is used to determine the default codeset for e-mail and by commands directly executed by the C<SHELL>.
+However, I<crond> runs as a daemon, and I<ascron> can't determine what locale it would use.  The operator's locale
+is used since there's a reasonable chance that it is also the system default, and the C<C/POSIX> locale is out of favor.
+
+To get the right results for your system, you can run I<ascron> C<LC_ALL=fr_FR ascron ...>, or use B<--locale>.
+
+=head2 Multi-level security
+
+I<crond> identifies its jobs to MLS-equipped systems (e.g. SELINUX, APPARMOR) so that they get the correct security contexts assigned.
+
+I<ascron> does not support this.  You may see different behaviors as a result.
+
+=head1 F<stdin> for I<cron> jobs
+
+If a I<crontab> command contains an unquoted '%', everything after the first unquoted '%' is sent to the job's F<stdin>.
+Any subsequent unquoted '%'s are converted to newlines ('\n'), and if the input does not end in a newline, one is added.
+Quoting is with backslash ('\'); only '%' and '\' may be quoted; in any other case, both the backslash and the following
+character are passed-through.
+
+If a I<crontab> command does not contain an unquoted '%', F<stdin> is attached to F</dev/null>.
+
+=head1 Mail from I<crond>
+
+Determining how and when e-mail is sent by I<crond> requires a careful reading of documents and code.  This is how I<ascron>
+implements it (some text borrowed from I<crond>'s I<man> pages:
+
+I<crond> (and thus I<ascron>) may send e-mail when a job generates output on F<stdout> or F<stdin>.
+
+In addition to B<LOGNAME>, B<HOME>, and B<SHELL>, cron(8) looks at the B<MAILTO> variable if a mail needs to be sent as a  result  of
+running any commands in that particular crontab.  If MAILTO is defined (and non-empty), mail is sent to the specified address.
+If B<MAILTO> is defined but empty (B<MAILTO="">), no mail is sent.  Otherwise,  mail  is  sent  to  the  owner  of  the crontab.
+
+If B<MAILFROM> is defined (and non-empty),  it is used as the envelope sender address, otherwise, ``B<root>'' is used.
+
+B<Note:>  Both  B<MAILFROM>  and B<MAILTO> variables' values are expanded using the I<crontab>'s environment, so setting them as in
+the following example works as expected:
+
+    MAILFROM=cron-$USER@cron.com ($USER is replaced by the system user)
+
+By default, cron sends a mail using the 'I<Content-Type:>' header of 'I<text/plain>' with the 'I<charset=>' parameter set  to  the
+'charmap/codeset' of the locale in which crond(8) is started up, i.e., either the default system locale, if no LC_* environment
+variables are set, or the locale specified by the LC_* environment variables (see locale(7)).
+
+Different  character  encodings  can  be used for mailing cron job outputs by setting the B<CONTENT_TYPE> and
+B<CONTENT_TRANSFER_ENCODING> variables in a crontab to the correct values of the mail headers of those names.
+
+If defined, B<MAILSUBJECT> can be used to provide a custom I<Subject> header.  It is subject to expansion with the following
+variables (but not environment variables):
+
+=over 4
+
+=item * %cmd%        - expands to the job's command line
+
+=item * %forkstatus% - expands to I<success> or I<failure> according to I<ascron>'s ability to fork a child process to run the command
+
+=item * %fqdn%       - expands to the fully qualified domain name of the host.
+
+=item * %hostname%   - expands to the first "word" of the hostname
+
+=item * %status%     - expands to I<success> or I<failure> according to the commands exit status
+
+=item * %user%       - expands to B<$USER>
+
+=back
+
+=head1 EXAMPLES
+
+=head2 locate and run jobs matching I<Backup> in the system tables
+
+    ascron --job Backup
+
+=head2 Locate and run jobs matching I<Backup> or I<rsync> in I<root>'s private table
+
+    ascron --job Backup rsync --user=root
+
+=head2 List all jobs matching I<Backup> in the system tables
+
+    ascron --job Backup --list
+
+=head2 List all jobs matching I<Backup> or I<update> in I<root>'s private table
+
+Note that the mstch number (for B<--match>) precedes each line, and that the line number in the I<crontab> follows the filename.
+
+    ascron --list --job Backup update -u root
+    1)/var/spool/cron/root:11 17 5 * * *   cd /Network ; CA/updateaccess >www/AccessOfDay.html 2>/dev/null
+    2)/var/spool/cron/root:23 12 2 * * *   nice -n19 /root/tools/Backup
+    3)/var/spool/cron/root:30 43 3 * * 4   /root/tools/update-leap -p 4
+    4)/var/spool/cron/root:32 37 2 * * Wed /etc/init.d/BlockCountries start -update
+
+=head2 Locate and run F<crontest> in an uninstalled I<crontab>
+
+This might be an application I<crontab> destined for F<cron.d>.
+
+    cat apptable
+    MAILSUBJECT=%fqdn% - %cmd% %status% for %user%
+    CRONJOB=1
+
+    * * * * * appuser /app/tools/crontest "a" "b-$$" "q"%stdin%data%
+
+    ascron --user=appuser --table=apptable --job test --format=system --mail=display
+    From: root (Cron Daemon)
+    To: appuser
+    Subject: myhost.example.net - /app/tools/crontest "a" "b-$$" "q" success for a[[iser
+    Content-Type: text/plain; charset=UTF-8
+    X-Cron-Env: <CRONJOB=1>
+    X-Cron-Env: <HOME=/home/litt>
+    X-Cron-Env: <LOGNAME=litt>
+    ...
+    USER       PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND
+    root         1  0.0  0.0   1740   576 ?        Ss   Oct19   0:02 init [5]
+
+=head2 Execute a F<ps> command as if it was contained in F</etc/crontab>
+
+    ascron --table=/etc/crontab --mail=display ps aux
+
+=head1 BUGS
+
+Report any bugs, feature requests and/or patches on the issue tracker,
+located at F<https://github.com/tlhackque/ascron/issues>.  In the
+event that the project moves, contact the author directly.
+
+=head1 AUTHOR
+
+Timothe Litt  E<lt>litt@acm.orgE<gt>
+
+=head1 COPYRIGHT and LICENSE
+
+Copyright (c) 2022 Timothe Litt
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of this software and associated documentation files (the "Software"),
+to deal in the Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, sublicense,
+and/or sell copies of the Software, and to permit persons to whom the
+Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included
+in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+Except as contained in this notice, the name of the author shall not be
+used in advertising or otherwise to promote the sale, use or other dealings
+in this Software without prior written authorization from the author.
+
+Any modifications to this software must be clearly documented by and
+attributed to their author, who is responsible for their effects.
+
+Bug reports, suggestions and patches are welcomed by the original author.
+
+=head1 SEE ALSO
+
+I<cron(8)> I<crond(8)> I<crontab(1)> I<crontab(1p)> I<crontab(5)>
+
+=cut
