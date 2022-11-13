@@ -1,0 +1,29 @@
+To install ascron:
+
+unpack tarball, e.g.:
+  tar -xzf ascron-1.000.tgz
+cd to the directory
+
+Make sure Perl is installed.
+
+make install                # to /usr/local
+make install prefix=/opt    # to /opt
+
+DESTDIR=/staging            # to /staging/usr/local
+
+To uninstall:
+
+make uninstall              # Use the same overrides as make install
+
+To rebuild man page (from pod, requires pod2man from Pod::Man):
+
+make
+
+To make a tarball:
+
+make dist
+
+To remove a tarball and its build directory:
+
+make clean
+
