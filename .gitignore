@@ -8,3 +8,6 @@
 *.tdy
 tmp/*
 *.tgz
+*.sig
+*.tar.gz *.tar.xz
+ascron-*

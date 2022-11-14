@@ -19,11 +19,19 @@ To rebuild man page (from pod, requires pod2man from Pod::Man):
 
 make
 
-To make a tarball:
+To make tarballs (kittypes compression(s))  with signature using default gpg key:
 
 make dist
 
-To remove a tarball and its build directory:
+To make only gz and xz (any file type recognized by tar -a can be used)
+
+make dist kittypes="gz xz"
+
+To make tarballs without signature
+
+make unsigned-dist
+
+To remove tarballs and packaging directory for current version:
 
 make clean
 
