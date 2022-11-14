@@ -17,6 +17,9 @@ INSTALL_DATA = $(INSTALL) -m 644
 
 tarversion != sed -ne"/our \$$VERSION \+=/s/^.*= *['\"]\\?V\\?\\([0-9.]\\+\\).*$$/\\1/p;" ascron
 kitname = ascron-$(tarversion)
+
+# file types from which tar can infer compression
+
 kittypes = gz xz lzop
 
 .PHONY : all
