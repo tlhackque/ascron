@@ -8,15 +8,15 @@ my $copyright =
 use warnings;
 use strict;
 
-our $VERSION = 'V1.000';
+our $VERSION = 'V1.0.1';
 
-use Cwd( qw/realpath getcwd/ );
+use Cwd(   qw/realpath getcwd/ );
 use Errno( qw/EAGAIN/ );
 use Fcntl( qw/:seek/ );
 use File::Basename;
 use File::Temp;
 use Getopt::Long( qw(:config bundling) );
-use POSIX( qw/:sys_wait_h setlocale LC_ALL LC_COLLATE strftime/ );
+use POSIX(        qw/:sys_wait_h setlocale LC_ALL LC_COLLATE setsid strftime/ );
 use Sys::Hostname;
 use Text::Abbrev;
 
@@ -43,9 +43,8 @@ $emptyenv{TZ} = $ENV{TZ} if( defined $ENV{TZ} );
 my( $log, $havegtod, $startt, $startu );
 
 # Parse (and default) the command line
-my(   $debug, $job, $match, $help, $list, $locale, $man, $sendmail, $table, $format,
-      $notz,  $user,
-      $version );
+my( $debug, $detach, $job,  $match, $help, $list, $locale, $man, $pidfile, $sendmail,
+    $table, $format, $notz, $user,  $version );
 
 my %formats  = ( abbrev( qw/system user/ ) );
 my %sendmail = ( abbrev( qw/discard display send/ ) );
@@ -65,50 +64,54 @@ if( defined $ENV{HOME} && open( my $ini, "<", "$ENV{HOME}/.$SELF" ) ) {
     unshift @argv, @ini;
 }
 
+sub opt_format {
+    my( $n, $v ) = @_;
+    if( ( my $k = $formats{$v} ) ) {
+        $format = $k;
+    } else {
+        die( "--format must be 'system' or 'user'\n" );
+    }
+    return;
+}
+
+sub opt_mailaction {
+    my( $n, $v ) = @_;
+    if( ( my $k = $sendmail{$v} ) ) {
+        $sendmail = $k;
+    } else {
+        die( "--mail-action must be 'discard', 'display', or 'send'\n" );
+    }
+    return;
+}
+
 GetOptions(
-        "debug|d=s"  => \$debug,
-        "help|h"     => \$help,
-        "job|j"      => \$job,
-        'list|l'     => \$list,
-        'locale|L=s' => \$locale,
-        'man'        => \$man,
-        'match|m=i'  => \$match,
-        "table|t=s"  => \$table,
-        "user|u=s"   => \$user,
-        "format|f=s" => sub {
-            my( $n, $v ) = @_;
-            if( ( my $k = $formats{$v} ) ) {
-                $format = $k;
-        } else {
-                die( "--format must be 'system' or 'user'\n" );
-            }
-            return;
-        },
-        "mail-action|M=s" => sub {
-            my( $n, $v ) = @_;
-            if( ( my $k = $sendmail{$v} ) ) {
-                $sendmail = $k;
-        } else {
-                die( "--mail-action must be 'discard', 'display', or 'send'\n" );
-            }
-            return;
-        },
-        "system|s" => sub {
-            $table = $systable;
-            return;
-        },
-        "tz|z=s"  => sub { $emptyenv{TZ} = $_[1]; undef $notz; },
-        "notz|Z"  => sub { delete $emptyenv{TZ}; $notz = 1; },
-        "version" => \$version,
+        'debug|d=s'        => \$debug,
+        'nodebug'          => sub { undef $debug; },
+        'daemon|detach|D!' => \$detach,
+        'help|h'           => \$help,
+        'job|j'            => \$job,
+        'list|l!'          => \$list,
+        'locale|L=s'       => \$locale,
+        'man'              => \$man,
+        'match|m=i'        => \$match,
+        'pidfile|p=s'      => \$pidfile,
+        'table|t=s'        => \$table,
+        'user|u=s'         => \$user,
+        'format|f=s'       => \&opt_format,
+        'mail-action|M=s'  => \&opt_mailaction,
+        'system|s'         => sub { $table = $systable; },
+        'tz|z=s'           => sub { $emptyenv{TZ} = $_[1]; undef $notz; },
+        'notz|Z'           => sub { delete $emptyenv{TZ}; $notz = 1; },
+        'version'          => \$version,
           ) or die( "Error in command\n" );
 
 # Handle help, man, & version
 if( $help || $man ) {
     eval {
-            no warnings 'once';
-            $Pod::Usage::Formatter = 'Pod::Text::Termcap';
-            require Pod::Usage;
-        } or
+        no warnings 'once';
+        $Pod::Usage::Formatter = 'Pod::Text::Termcap';
+        require Pod::Usage;
+    } or
         die( "Install Pod::Usage or use 'perldoc $0'\n" );
     Pod::Usage::pod2usage( 1 )                            if $help;
     Pod::Usage::pod2usage( -exitval => 0, -verbose => 2 ) if $man;
@@ -123,17 +126,17 @@ if( $version ) {
 
 if( defined $debug ) {
     $havegtod = eval {
-            require Time::HiRes;
-            Time::HiRes->import( qw/gettimeofday/ );
-            return 1;
+        require Time::HiRes;
+        Time::HiRes->import( qw/gettimeofday/ );
+        return 1;
     };
     ( $startt, $startu ) = $havegtod ? gettimeofday() : ( time, 0 );
     if( $debug eq "" || $debug eq '-' ) {
         $debug = \*STDERR;
     } else {
         open( my $df, '>', $debug ) or do {
-                printf STDERR ( "Debug: %s:%s\n", $debug, $! );
-                exit 1;
+            printf STDERR ( "Debug: %s:%s\n", $debug, $! );
+            exit 1;
         };
         printf STDERR ( "Debug logging to %s\n", $debug );
         $log   = realpath( $debug );
@@ -276,8 +279,8 @@ if( defined $job ) {  # Job from a crontab
     }
     $matchRE = join( '|', map { "(?:$_)" } @ARGV );  # ?? map { "(?:\Q$_\E)" } @ARGV;
     my $mat = eval { qr/$matchRE/ } or do {
-            printf STDERR ( "Invalid match expression: %s\n", $matchRE );
-            exit 1;
+        printf STDERR ( "Invalid match expression: %s\n", $matchRE );
+        exit 1;
     };
     $matchRE = $mat;
 } else {  # Job from command line
@@ -305,9 +308,9 @@ foreach my $file ( defined $table
     %env = %emptyenv;
 
     open( my $tbl, '<', $file ) or do {
-            printf STDERR ( "Can't read %s - %s\n", $file, $! );
-            debug( "%s: %s", $file, $! );
-            next TABLE;
+        printf STDERR ( "Can't read %s - %s\n", $file, $! );
+        debug( "%s: %s", $file, $! );
+        next TABLE;
     };
 
     while( <$tbl> ) {
@@ -398,7 +401,7 @@ sub dojob {
 
     $cmd = '' unless( defined $cmd );
 
-    debug( "Processng job %s", $cmd );
+    debug( "Executing job %s", $cmd );
 
     # Separate command from any stdin data and handle % => \n and \%, \\ substitutions
     my @cmd = split( //, $cmd );
@@ -455,8 +458,9 @@ sub dojob {
             my %m = map { $_ => 1 } split( /\s/, $gm );
             $groups{$gi} = 1 if( exists $m{$name} && $gi ne 0 );
         }
-        $groups = join( ' ', $gid, $gid,
-                        map { $_ != $gid ? $_ : () } sort { $a <=> $b } keys %groups );
+        $groups = join(
+                ' ', $gid, $gid,
+                map { $_ != $gid ? $_ : () } sort { $a <=> $b } keys %groups );
     }
     if( $debug ) {
         debug( "Environment" );
@@ -480,70 +484,126 @@ sub dojob {
         open( $jin, '<', '/dev/null' ) or die( "No /dev/null\n" );
     }
 
-    my( $pid, $forksts );
-    $forksts = 0;
-FORK: {
-        if( ( $pid = fork ) ) { last FORK; }
-        if( defined $pid ) {
-            %ENV = %$env;
-
-            if( $> == 0 ) {
-                $! = 0;
-                $( = $gid;
-                $) = $groups;
-                $> = $< = $uid;
-                if( $! ) {
-                    printf STDERR ( "Unable to assume %s's identity: %s\n", $user, $! );
-                    exit 1;
-                }
-            }
-            chdir( $ENV{HOME} ) || die( "chdir: $!\n" );
-
-            STDOUT->flush;
-            STDERR->flush;
-
-            close( STDOUT );
-            open( STDOUT, '>&' . fileno( $jout ) ) or die( "STDOUT: $!\n" );
-            STDOUT->autoflush( 1 );
-            close( STDIN );
-            open( STDIN, '<&' . fileno( $jin ) ) or die( "STDIN: $!\n" );
-
-            close( STDERR );
-            open( STDERR, '>&' . fileno( STDOUT ) ) or die( "STDERR: $!\n" );
-            STDERR->autoflush( 1 );
-
-            exec { $ENV{SHELL} } ( $ENV{SHELL}, '-c', $cmd );
-            die( "Can't exec $ENV{SHELL} with $cmd\n" );
-        } elsif( $! == EAGAIN ) {
-            sleep 6;
-            debug( "Retrying fork" );
-            redo FORK;
-        } else {
-            $forksts = +$!;
-            printf STDERR ( "fork: %s\n", $! );
-            debug( "fork failed: $!" );
-            last FORK;
-        }
+    if( defined $pidfile && length $pidfile ) {
+        $pidfile = realpath( $pidfile );
+        unlink( $pidfile );
     }
 
-    # Parent continues, wait for child
-    my $sts = -1;
-    if( defined $pid ) {
-        if( $debug && $> == 0 ) {
-            my @g = split( / /, $groups );
-            shift @g;
-            foreach my $g ( @g ) {
-                my $n = getgrgid( $g );
-                $g = defined $n ? sprintf( '%u(%s)', $g, $n ) : $g;
+    my( $pid, $forksts );
+    $forksts = 0;
+    if( $detach ) {
+    DETACH: {
+            if( ( $pid = fork ) ) {
+                debug( "Detached process is pid %U\n", $pid );
+                if( defined $pidfile && length $pidfile ) {
+                    open( my $pf, '>>', $pidfile ) or die( "$pidfile::$!\n" );
+                    printf $pf ( "d:%u\n", $pid );
+                    close( $pf );
+                }
+                exit 0;
             }
-            debug(  "Job running as PID %u, uid=%u(%s), gid=%s, groups=%s", $pid, $uid,
-                    $name, $g[0], join( ',', @g ) );
-        } else {
-            debug( "Job running as PID %u", $pid );
+            if( defined $pid ) {
+                setsid();
+                chdir( '/' );
+                $SIG{'HUP'} = 'IGNORE';
+                last DETACH;
+            }
+            if( $! == EAGAIN ) {
+                sleep 6;
+                debug( "Retrying fork" );
+                redo DETACH;
+            } else {
+                $forksts = +$!;
+                printf STDERR ( "fork: %s\n", $! );
+                debug( "fork failed: $!" );
+                last DETACH;
+            }
         }
-        waitpid( $pid, 0 );
-        $sts = $? >> 8;
-        debug( "Job done, result:%s", $? ? procsts : " success" );
+    }
+    unless( $forksts ) {
+    FORK: {
+            if( ( $pid = fork ) ) { last FORK; }
+            if( defined $pid ) {
+                %ENV = %$env;
+
+                umask( 0 );
+
+                if( $> == 0 ) {
+                    $! = 0;
+                    $( = $gid;
+                    $) = $groups;
+                    $> = $< = $uid;
+                    if( $! ) {
+                        printf STDERR (
+                                "Unable to assume %s's identity: %s\n", $user,
+                                $! );
+                        exit 1;
+                    }
+                }
+                chdir( $ENV{HOME} ) || die( "chdir: $!\n" );
+
+                STDOUT->flush;
+                STDERR->flush;
+
+                close( STDOUT );
+                open( STDOUT, '>&' . fileno( $jout ) ) or die( "STDOUT: $!\n" );
+                STDOUT->autoflush( 1 );
+                close( STDIN );
+                open( STDIN, '<&' . fileno( $jin ) ) or die( "STDIN: $!\n" );
+
+                close( STDERR );
+                open( STDERR, '>&' . fileno( STDOUT ) ) or die( "STDERR: $!\n" );
+                STDERR->autoflush( 1 );
+
+                exec { $ENV{SHELL} } ( $ENV{SHELL}, '-c', $cmd );
+                die( "Can't exec $ENV{SHELL} with $cmd\n" );
+            } elsif( $! == EAGAIN ) {
+                sleep 6;
+                debug( "Retrying fork" );
+                redo FORK;
+            } else {
+                $forksts = +$!;
+                printf STDERR ( "fork: %s\n", $! );
+                debug( "fork failed: $!" );
+                last FORK;
+            }
+        }
+
+        # Parent continues, wait for child
+        my $sts = -1;
+        if( defined $pid ) {
+            if( defined $pidfile && length $pidfile ) {
+                open( my $pf, '>>', $pidfile ) or die( "$pidfile::$!\n" );
+                printf $pf ( "j:%u\n", $pid );
+                close( $pf );
+            }
+            if( $debug && $> == 0 ) {
+                if( $detach ) {
+                    close( STDIN );
+                    open( STDIN, '<', '/dev/null' );
+                    close( STDOUT );
+                    open( STDOUT, '>', '/dev/null' );
+                    unless( $debug && $debug == \*STDERR ) {
+                        close( STDERR );
+                        open( STDERR, '>', '/dev/null' );
+                    }
+                }
+                my @g = split( / /, $groups );
+                shift @g;
+                foreach my $g ( @g ) {
+                    my $n = getgrgid( $g );
+                    $g = defined $n ? sprintf( '%u(%s)', $g, $n ) : $g;
+                }
+                debug(  "Job running as PID %u, uid=%u(%s), gid=%s, groups=%s", $pid,
+                        $uid,
+                        $name, $g[0], join( ',', @g ) );
+            } else {
+                debug( "Job running as PID %u", $pid );
+            }
+            waitpid( $pid, 0 );
+            $sts = $? >> 8;
+            debug( "Job done, result:%s", $? ? procsts : " success" );
+        }
     }
     close( $jin );
 
@@ -613,8 +673,9 @@ HDR
         $subj =~ s/%fqdn%/$hostname/g;
         printf $mail ( "Subject: %s\n", $subj );
     } else {
-        printf $mail ( "Subject: Cron <%s@%s> %s%s\n",
-                       $user, $hn, $cmd, $sts ? " (failed)" : "" );
+        printf $mail (
+                "Subject: Cron <%s@%s> %s%s\n",
+                $user, $hn, $cmd, $sts ? " (failed)" : "" );
     }
 
     my $ct = $env->{CONTENT_TYPE};
@@ -633,8 +694,9 @@ HDR
     for my $e ( sort keys %$env ) {
         printf $mail ( "X-Cron-Env: <%s=%s>\n", $e, $env->{$e} );
     }
-    printf $mail ( "X-ascron-Logfile: %s %s\n", $log,
-                   strftime( "%d-%b-%Y %T", localtime( time ) ) )
+    printf $mail (
+            "X-ascron-Logfile: %s %s\n", $log,
+            strftime( "%d-%b-%Y %T", localtime( time ) ) )
         if( defined $log );
     print $mail ( "\n" );
 
@@ -702,9 +764,10 @@ ascron - Run cron jobs from a terminal
 =head1 SYNOPSIS
 
  ascron   command | job-regexp
-           --format  --job    --list    --mail-action --locale --match
-           --system  --table  --user    --debug=file  --tz      --notz
-           --help    --man    --version
+           --format  --job     --list    --mail-action --locale --match
+           --system  --table   --user    --debug=file  --tz      --notz
+           --detach  --pidfile
+           --help    --man     --version
 
 =head1 DESCRIPTION
 
@@ -734,15 +797,25 @@ The following options are used to select the I<crontab>(s) searched, and the job
 B<system> I<crontabs> include the user under which a job runs.  These include F</etc/crontab> and F</etc/cron.d/*>.
 B<user> I<crontabs> do not include the user.  The user is implied by the Icrontab>'s location or by the B<--format> option.  The user may also be specified by the B<--user> option.
 
-Options contained in F<~/.ascron> will be applied before any specified on the command line.
+Options contained in F<~/.ascron> will be applied before any specified on the command line.  The B<--no> forms of options may be useful on the command line to override F<~/.ascron>.
 
 =over 4
 
-=item B<-d> B<--debug>=F<file>
+=item B<-d> B<--debug>=F<file> B<--nodebug>
 
 Writes a detailed log of processing events to F<file>.  F<file> may be '-' for F<stderr>.
 
 While intended for debugging I<ascron>, some of the detail may be helpful for understanding how I<cron> processes a job.
+
+=item B<-D> B<--[no]detach> B<--[no]daemon>
+
+I<ascron> daemonizes itself before running the job.  This frees your terminal when executing long-running jobs, and is how I<crond> runs.
+
+This does not affect B<--debug> output if F<stderr> is specified.
+
+Ues B<--pidfile> if you want to capture the PID of the daemon.
+
+Consider placing B<--detach> in your F<.ascron> if long-running jobs are the norm.
 
 =item B<-f> B<--format>=I<system>|I<user> 
 
@@ -754,7 +827,7 @@ Specifies the job(s) to be located in the I<crontab>(s).  The command arguments 
 
 If B<--job> is not specified, the command is specified by the command line arguments.
 
-=item B<-l> B<--list>
+=item B<-l> B<--[no]list>
 
 With B<--job>, lists all matching jobs (and does not execute any).  Useful with multiple matches to determine a value of B<--match> that will select the desired job.
 
@@ -763,6 +836,12 @@ With B<--job>, lists all matching jobs (and does not execute any).  Useful with 
 Output on F<stdout> or F<stderr> from I<cron> jobs is (usually) e-mailed; the destination, source, subject, and format are controlled by environment variables set om tje I<crontab>.
 
 By default, I<ascron> faithfully emulates this behavior -- which can be inconvenient for debugging jobs.  B<--mail-action> can override the default action so that the mail message is displayed (on F<stdout>) or discarded.
+
+=item B<-p> B<--pidfile>=F<file>
+
+Write the PID of the job to F<file> as I<j:<pid>>.
+
+When daemonizing, write the PID of the daemon to F<file> as I<d:<pid>>.  The order of the PIDs is unpredictable.
 
 =item B<-t> B<--table>=F<file>
 
@@ -882,11 +961,15 @@ variables (but not environment variables):
 
 =head1 EXAMPLES
 
-=head2 locate and run jobs matching I<Backup> in the system tables
+=head2 locate and run first job matching I<Backup> in the system tables
 
     ascron --job Backup
 
-=head2 Locate and run jobs matching I<Backup> or I<rsync> in I<root>'s private table
+=head2 Run I<Backup> from the system tables from a daemon
+
+    ascron --job Backup --detach --pidfile=Backup.pid
+
+=head2 Locate and run first job matching I<Backup> or I<rsync> in I<root>'s private table
 
     ascron --job Backup rsync --user=root
 
