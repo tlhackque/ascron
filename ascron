@@ -49,7 +49,8 @@ my( $debug, $detach, $job,  $match, $help, $list, $locale, $man, $pidfile, $send
 my %formats  = ( abbrev( qw/system user/ ) );
 my %sendmail = ( abbrev( qw/discard display send/ ) );
 
-if( defined $ENV{HOME} && open( my $ini, "<", "$ENV{HOME}/.$SELF" ) ) {
+my $ini;
+if( defined $ENV{HOME} && open( $ini, "<", "$ENV{HOME}/.$SELF" ) ) {
     require Text::ParseWords;
     my @ini;
     while( <$ini> ) {
@@ -60,8 +61,11 @@ if( defined $ENV{HOME} && open( my $ini, "<", "$ENV{HOME}/.$SELF" ) ) {
         push @ini, Text::ParseWords::parse_line( '\s+', 0, $_ );
     }
     close( $ini );
+    $ini = realpath( "$ENV{HOME}/.$SELF" );
     unshift @ARGV, @ini;
     unshift @argv, @ini;
+} else {
+    undef $ini;
 }
 
 sub opt_format {
@@ -143,6 +147,7 @@ if( defined $debug ) {
         $debug = $df;
     }
     debug( strftime( "%a %d-%b-%Y", localtime( time ) ) );
+    debug( "Read %s\n", $ini ) if( defined $ini && length $ini );
     debug( "%s %s\n", $SELF, join( ' ', @argv ) );
 }
 
