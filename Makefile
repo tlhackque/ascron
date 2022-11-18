@@ -13,10 +13,29 @@ INSTALL = install
 INSTALL_PROGRAM = $(INSTALL)
 INSTALL_DATA = $(INSTALL) -m 644
 
+# Specify key="deadbeef" or key="deadbeef beeffeed" on command line (else default)
+GPG = gpg
+
+SHELL := bash
+
+# Usage:
+#  See INSTALL
+
 # Extract version from ascron source
 
 tarversion != sed -ne"/our \$$VERSION \+=/s/^.*= *['\"]\\?V\\?\\([0-9.]\\+\\).*$$/\\1/p;" ascron
 kitname = ascron-$(tarversion)
+
+# If in a Git working directory and the git command is available,
+# get the last tag and wd state in case making a distribution
+
+ifneq "$(strip $(shell [ -d '.git' ] && echo 'true' ))" ""
+  gitcmd != command -v git
+  ifneq "$(strip $(gitcmd))" ""
+    gittag != git tag | tail -n1
+    gitdirty != git diff --stat
+  endif
+endif
 
 # file types from which tar can infer compression
 
@@ -28,8 +47,8 @@ all : ascron$(man1ext)
 
 # Compilations: man page from pod in ascron
 
-ascron$(man1ext) : ascron
-	pod2man --center "Interactive cron simulator" $< $@
+ascron$(man1ext) : ascron Makefile
+	pod2man --center "Interactive cron simulator"  --release "$$(./ascron --version | sed -e'1!d;s/version //')" $< $@
 
 # Make tarball kits - various compressions
 
@@ -39,11 +58,11 @@ dist : signed-dist
 
 signed-dist : unsigned-dist $(foreach type,$(kittypes),$(kitname).tar.$(type).sig)
 
-unsigned-dist :$(foreach type,$(kittypes),$(kitname).tar.$(type))
+unsigned-dist : $(foreach type,$(kittypes),$(kitname).tar.$(type))
 
 # Tarball build directory
 
-$(kitname) :  ascron ascron$(man1ext) Makefile
+$(kitname) :  ascron ascron$(man1ext) Makefile INSTALL
 	rm -rf $(kitname)
 	mkdir -p $(kitname)
 	cp -p $^ $(kitname)
@@ -84,6 +103,19 @@ define make_tar =
 %.tar.$(1) : %
 	tar -caf $$@ $$^
 	chown 0.0 $$@
+ifneq ($(strip $(gitcmd)),)
+  ifeq ($(strip $(gitdirty)),)
+    ifeq ($(strip $(gittag)),V$(tarversion))
+	@echo " *** Not tagging because $(gittag)/V$(tarversion) already exists"
+	@echo ""
+    else
+	-git tag -f V$(tarversion)
+    endif
+  else
+	@echo " *** Not tagging V$(tarversion) because working directory is dirty"
+	@echo ""
+  endif
+endif
 
 endef
 
@@ -91,7 +123,7 @@ $(foreach type,$(kittypes),$(eval $(call make_tar,$(type))))
 
 # create a detached signature for a file
 
-%.sig : %
+%.sig : % Makefile
 	rm -f $<.sig
-	gpg --output $@ --detach-sig $(basename $@)
+	$(GPG) --output $@ --detach-sig $(if $(key),$(foreach k,$(key), --local-user "$(k)"),) $(basename $@)
 	chown 0.0 $@

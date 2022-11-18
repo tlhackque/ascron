@@ -19,9 +19,20 @@ To rebuild man page (from pod, requires pod2man from Pod::Man):
 
 make
 
+To commit an edit:
+
+ - Update version in ascron.
+
+ - make && git commit -m"..." && make dist && git push --tags
+
+
 To make tarballs (kittypes compression(s))  with signature using default gpg key:
 
 make dist
+
+To make targalls with signature using a specific gpg key(s)
+
+make dist key="xxxxxxxx yyyyyyyy"
 
 To make only gz and xz (any file type recognized by tar -a can be used)
 
@@ -35,3 +46,8 @@ To remove tarballs and packaging directory for current version:
 
 make clean
 
+Any make that creates a tarball will tag HEAD if:
+  - From a working directory and
+  - The git command is available and
+  - The working directory is clean and
+  - The version of ascron is not alreay tagged.
