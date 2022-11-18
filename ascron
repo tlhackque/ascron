@@ -8,7 +8,7 @@ my $copyright =
 use warnings;
 use strict;
 
-our $VERSION = 'V1.0.1';
+our $VERSION = 'V1.0.2';
 
 use Cwd(   qw/realpath getcwd/ );
 use Errno( qw/EAGAIN/ );
@@ -27,6 +27,8 @@ sub procsts;
 my $SELF = basename $0;
 my @argv = @ARGV;
 
+# The following may be distribution-specific
+
 my( $usertable, @systables ) = ( '/var/spool/cron/%s', '/etc/crontab', '/etc/cron.d/*' );
 my $systableRE  = join( '|', @systables );
 my $systable    = '*system*';
@@ -34,6 +36,9 @@ my $mailer      = '/usr/lib/sendmail';
 my $mailcmd     = "%s -i -F'Cron Daemon' -f %s -odi -oem %s";
 my $localtime   = "/etc/localtime";        # Olson timezone; zoneinfo line or file
 my $timezone    = "/etc/timezone";         # Debian timezone - contains timezone
+
+# No distribution-specific tailoring should be required from here on
+
 my $defaultUser = getpwuid( $> );
 my %emptyenv    = ( SHELL => '/bin/sh', );
 
@@ -46,7 +51,7 @@ my( $log, $havegtod, $startt, $startu );
 my( $debug, $detach, $job,  $match, $help, $list, $locale, $man, $pidfile, $sendmail,
     $table, $format, $notz, $user,  $version );
 
-my %formats  = ( abbrev( qw/system user/ ) );
+my %formats  = ( abbrev( qw/automatic system user/ ) );
 my %sendmail = ( abbrev( qw/discard display send/ ) );
 
 my $ini;
@@ -71,9 +76,9 @@ if( defined $ENV{HOME} && open( $ini, "<", "$ENV{HOME}/.$SELF" ) ) {
 sub opt_format {
     my( $n, $v ) = @_;
     if( ( my $k = $formats{$v} ) ) {
-        $format = $k;
+        $format = $k eq 'automatic'? undef : $k;
     } else {
-        die( "--format must be 'system' or 'user'\n" );
+        die( "--format must be 'automatic', 'system' or 'user'\n" );
     }
     return;
 }
@@ -92,20 +97,25 @@ GetOptions(
         'debug|d=s'        => \$debug,
         'nodebug'          => sub { undef $debug; },
         'daemon|detach|D!' => \$detach,
-        'help|h'           => \$help,
         'job|j'            => \$job,
+        'nojob|command|c'  => sub { undef $job; },
         'list|l!'          => \$list,
         'locale|L=s'       => \$locale,
-        'man'              => \$man,
+        'nolocale'         => sub { undef $locale; },
         'match|m=i'        => \$match,
         'pidfile|p=s'      => \$pidfile,
+        'nopidfile'        => sub { undef $pidfile; },
         'table|t=s'        => \$table,
+        'notable'          => sub { undef $table; },
         'user|u=s'         => \$user,
+        'nouser'           => sub { undef $user; },
         'format|f=s'       => \&opt_format,
         'mail-action|M=s'  => \&opt_mailaction,
         'system|s'         => sub { $table = $systable; },
         'tz|z=s'           => sub { $emptyenv{TZ} = $_[1]; undef $notz; },
         'notz|Z'           => sub { delete $emptyenv{TZ}; $notz = 1; },
+        'help|h'           => \$help,
+        'man'              => \$man,
         'version'          => \$version,
           ) or die( "Error in command\n" );
 
@@ -240,7 +250,7 @@ debug( "Codeset %s selected\n", $charset );  # Used for the default Content-Type
 # Output handling
 $sendmail = 'send' unless( defined $sendmail );
 
-# Reasonable defaults for the inter-related tab, format and user
+# Reasonable defaults for the inter-related table, format and user
 if( defined $table && ( $table eq $systable || $table =~ /$systableRE/ ) ) {
     $format = 'system';
 } elsif( !defined $table && !defined $format ) {
@@ -800,7 +810,7 @@ See B<EXAMPLES> for how these interact.
 The following options are used to select the I<crontab>(s) searched, and the job to be run.
 
 B<system> I<crontabs> include the user under which a job runs.  These include F</etc/crontab> and F</etc/cron.d/*>.
-B<user> I<crontabs> do not include the user.  The user is implied by the Icrontab>'s location or by the B<--format> option.  The user may also be specified by the B<--user> option.
+B<user> I<crontabs> do not include the user.  The user is implied by the Icrontab>'s location or by the B<--format> option.  The user may also be specified by the B<--user> option, which also implies a default table.
 
 Options contained in F<~/.ascron> will be applied before any specified on the command line.  The B<--no> forms of options may be useful on the command line to override F<~/.ascron>.
 
@@ -822,15 +832,17 @@ Ues B<--pidfile> if you want to capture the PID of the daemon.
 
 Consider placing B<--detach> in your F<.ascron> if long-running jobs are the norm.
 
-=item B<-f> B<--format>=I<system>|I<user> 
+=item B<-f> B<--format>=I<automatic|system>|I<user>
 
 Specifies the format of the I<crontab>(s) read by the command.
+
+I<automatic>, the default, determines the format using B<--table>, B<--user>, and/or B<--job>.
 
 =item B<-j> B<--job>
 
 Specifies the job(s) to be located in the I<crontab>(s).  The command arguments are unanchored regular expressions that match each I<crontab> command.  If more than one argument is specified, they are combined with I<or>; that is, a command is selected if any of the arguments matches.  By default, the first matching command will be used, but B<--match> can specify a subsequent match.
 
-If B<--job> is not specified, the command is specified by the command line arguments.
+If B<--job> is not specified or B<--nojob>/B<--command>/B<-c> is specified, the command is specified by the command line arguments.
 
 =item B<-l> B<--[no]list>
 
@@ -838,31 +850,35 @@ With B<--job>, lists all matching jobs (and does not execute any).  Useful with 
 
 =item B<-M> B<--mail-action>=I<discard>|I<display>|I<send>
 
-Output on F<stdout> or F<stderr> from I<cron> jobs is (usually) e-mailed; the destination, source, subject, and format are controlled by environment variables set om tje I<crontab>.
+Output on F<stdout> or F<stderr> from I<cron> jobs is (usually) e-mailed; the destination, source, subject, and format are controlled by environment variables set in the I<crontab>.
 
 By default, I<ascron> faithfully emulates this behavior -- which can be inconvenient for debugging jobs.  B<--mail-action> can override the default action so that the mail message is displayed (on F<stdout>) or discarded.
 
-=item B<-p> B<--pidfile>=F<file>
+=item B<-p> B<--pidfile>=F<file> B<--nopidfile>
 
 Write the PID of the job to F<file> as I<j:<pid>>.
 
-When daemonizing, write the PID of the daemon to F<file> as I<d:<pid>>.  The order of the PIDs is unpredictable.
+When daemonizing, also write the PID of the daemon to F<file> as I<d:<pid>>.  The order of the PIDs is unpredictable.
 
-=item B<-t> B<--table>=F<file>
+=item B<-t> B<--table>=F<file> B<--notable>
 
 Selects the I<crontab> file used to extract environment variables, and (with B<--job>) the command.
 
 Note that without B<--job>, the job defined on the command line is processed as if it is located at the end of the I<crontab>.  Thus, if an environment variable is re-defined in a I<crontab>, the last definition is used.
 
-=item B<-u> B<--user>=I<name>
+If not specified or defaulted, all system tables are read.
+
+=item B<-u> B<--user>=I<name> B<--nouser>
 
 Specifies the username to be matched when locating a job or table; under which the job executes.
+
+If B<--table> is not specified, B<--user> implies the user's private table.
 
 If a username is required, but not determined implicitly or by B<--user>, the username is obtained from the opertor's (effective) I<UID>.
 
 =item B<-m> B<--match>=I<n>
 
-Specifies that the I<n>th matching job is to be used.  The first match is numbered 1.
+Specifies that the I<n>th matching job is to be used.  The first (and default) match is numbered 1.
 
 =item B<-z> B<--tz>=i<zone>  B<-Z> B<--notz>
 
@@ -874,7 +890,7 @@ To specify the value of B<TZ> for I<ascron> jobs, use B<--tz>=I<zone>, where I<z
 
 To omit B<TZ>, use B<--notz>.
 
-=item B<-L> B<--locale>=I<specifier>
+=item B<-L> B<--locale>=I<specifier> B<--nolocale>
 
 Specifies the locale from which the default codeset for e-mails is determined.  See L<Subtleties>, below for details.
 
@@ -903,7 +919,11 @@ By default, the operator's locale is used to determine the default codeset for e
 However, I<crond> runs as a daemon, and I<ascron> can't determine what locale it would use.  The operator's locale
 is used since there's a reasonable chance that it is also the system default, and the C<C/POSIX> locale is out of favor.
 
+However, C<LC_COLLATE> is set to C<C> for compatibility with I<crond>.
+
 To get the right results for your system, you can run I<ascron> C<LC_ALL=fr_FR ascron ...>, or use B<--locale>.
+
+If C<LC_*> environment variables are set in tables, they apply to (subsequent) jobs.
 
 =head2 Multi-level security
 

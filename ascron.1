@@ -129,7 +129,7 @@
 .\" ========================================================================
 .\"
 .IX Title "ASCRON 1"
-.TH ASCRON 1 "2022-11-17" "perl v5.8.8" "Interactive cron simulator"
+.TH ASCRON 1 "2022-11-18" "perl v5.8.8" "Interactive cron simulator"
 .\" For nroff, turn off justification.  Always turn off hyphenation; it makes
 .\" way too many mistakes in technical documents.
 .if n .ad l
@@ -170,7 +170,7 @@ See \fB\s-1EXAMPLES\s0\fR for how these interact.
 The following options are used to select the \fIcrontab\fR(s) searched, and the job to be run.
 .PP
 \&\fBsystem\fR \fIcrontabs\fR include the user under which a job runs.  These include \fI/etc/crontab\fR and \fI/etc/cron.d/*\fR.
-\&\fBuser\fR \fIcrontabs\fR do not include the user.  The user is implied by the Icrontab>'s location or by the \fB\-\-format\fR option.  The user may also be specified by the \fB\-\-user\fR option.
+\&\fBuser\fR \fIcrontabs\fR do not include the user.  The user is implied by the Icrontab>'s location or by the \fB\-\-format\fR option.  The user may also be specified by the \fB\-\-user\fR option, which also implies a default table.
 .PP
 Options contained in \fI~/.ascron\fR will be applied before any specified on the command line.  The \fB\-\-no\fR forms of options may be useful on the command line to override \fI~/.ascron\fR.
 .IP "\fB\-d\fR \fB\-\-debug\fR=\fIfile\fR \fB\-\-nodebug\fR" 4
@@ -187,40 +187,46 @@ This does not affect \fB\-\-debug\fR output if \fIstderr\fR is specified.
 Ues \fB\-\-pidfile\fR if you want to capture the \s-1PID\s0 of the daemon.
 .Sp
 Consider placing \fB\-\-detach\fR in your \fI.ascron\fR if long-running jobs are the norm.
-.IP "\fB\-f\fR \fB\-\-format\fR=\fIsystem\fR|\fIuser\fR" 4
-.IX Item "-f --format=system|user"
+.IP "\fB\-f\fR \fB\-\-format\fR=\fIautomatic|system\fR|\fIuser\fR" 4
+.IX Item "-f --format=automatic|system|user"
 Specifies the format of the \fIcrontab\fR(s) read by the command.
+.Sp
+\&\fIautomatic\fR, the default, determines the format using \fB\-\-table\fR, \fB\-\-user\fR, and/or \fB\-\-job\fR.
 .IP "\fB\-j\fR \fB\-\-job\fR" 4
 .IX Item "-j --job"
 Specifies the job(s) to be located in the \fIcrontab\fR(s).  The command arguments are unanchored regular expressions that match each \fIcrontab\fR command.  If more than one argument is specified, they are combined with \fIor\fR; that is, a command is selected if any of the arguments matches.  By default, the first matching command will be used, but \fB\-\-match\fR can specify a subsequent match.
 .Sp
-If \fB\-\-job\fR is not specified, the command is specified by the command line arguments.
+If \fB\-\-job\fR is not specified or \fB\-\-nojob\fR/\fB\-\-command\fR/\fB\-c\fR is specified, the command is specified by the command line arguments.
 .IP "\fB\-l\fR \fB\-\-[no]list\fR" 4
 .IX Item "-l --[no]list"
 With \fB\-\-job\fR, lists all matching jobs (and does not execute any).  Useful with multiple matches to determine a value of \fB\-\-match\fR that will select the desired job.
 .IP "\fB\-M\fR \fB\-\-mail\-action\fR=\fIdiscard\fR|\fIdisplay\fR|\fIsend\fR" 4
 .IX Item "-M --mail-action=discard|display|send"
-Output on \fIstdout\fR or \fIstderr\fR from \fIcron\fR jobs is (usually) e\-mailed; the destination, source, subject, and format are controlled by environment variables set om tje \fIcrontab\fR.
+Output on \fIstdout\fR or \fIstderr\fR from \fIcron\fR jobs is (usually) e\-mailed; the destination, source, subject, and format are controlled by environment variables set in the \fIcrontab\fR.
 .Sp
 By default, \fIascron\fR faithfully emulates this behavior \*(-- which can be inconvenient for debugging jobs.  \fB\-\-mail\-action\fR can override the default action so that the mail message is displayed (on \fIstdout\fR) or discarded.
-.IP "\fB\-p\fR \fB\-\-pidfile\fR=\fIfile\fR" 4
-.IX Item "-p --pidfile=file"
+.IP "\fB\-p\fR \fB\-\-pidfile\fR=\fIfile\fR \fB\-\-nopidfile\fR" 4
+.IX Item "-p --pidfile=file --nopidfile"
 Write the \s-1PID\s0 of the job to \fIfile\fR as \fIj:<pid\fR>.
 .Sp
-When daemonizing, write the \s-1PID\s0 of the daemon to \fIfile\fR as \fId:<pid\fR>.  The order of the PIDs is unpredictable.
-.IP "\fB\-t\fR \fB\-\-table\fR=\fIfile\fR" 4
-.IX Item "-t --table=file"
+When daemonizing, also write the \s-1PID\s0 of the daemon to \fIfile\fR as \fId:<pid\fR>.  The order of the PIDs is unpredictable.
+.IP "\fB\-t\fR \fB\-\-table\fR=\fIfile\fR \fB\-\-notable\fR" 4
+.IX Item "-t --table=file --notable"
 Selects the \fIcrontab\fR file used to extract environment variables, and (with \fB\-\-job\fR) the command.
 .Sp
 Note that without \fB\-\-job\fR, the job defined on the command line is processed as if it is located at the end of the \fIcrontab\fR.  Thus, if an environment variable is re-defined in a \fIcrontab\fR, the last definition is used.
-.IP "\fB\-u\fR \fB\-\-user\fR=\fIname\fR" 4
-.IX Item "-u --user=name"
+.Sp
+If not specified or defaulted, all system tables are read.
+.IP "\fB\-u\fR \fB\-\-user\fR=\fIname\fR \fB\-\-nouser\fR" 4
+.IX Item "-u --user=name --nouser"
 Specifies the username to be matched when locating a job or table; under which the job executes.
+.Sp
+If \fB\-\-table\fR is not specified, \fB\-\-user\fR implies the user's private table.
 .Sp
 If a username is required, but not determined implicitly or by \fB\-\-user\fR, the username is obtained from the opertor's (effective) \fI\s-1UID\s0\fR.
 .IP "\fB\-m\fR \fB\-\-match\fR=\fIn\fR" 4
 .IX Item "-m --match=n"
-Specifies that the \fIn\fRth matching job is to be used.  The first match is numbered 1.
+Specifies that the \fIn\fRth matching job is to be used.  The first (and default) match is numbered 1.
 .IP "\fB\-z\fR \fB\-\-tz\fR=i<zone>  \fB\-Z\fR \fB\-\-notz\fR" 4
 .IX Item "-z --tz=i<zone> -Z --notz"
 \&\fIcrond\fR implementations vary considerably in whether jobs have \fB\s-1TZ\s0\fR (the timezone) in their environment, and if they do, where it comes from and what it contains.
@@ -230,8 +236,8 @@ Specifies that the \fIn\fRth matching job is to be used.  The first match is num
 To specify the value of \fB\s-1TZ\s0\fR for \fIascron\fR jobs, use \fB\-\-tz\fR=\fIzone\fR, where \fIzone\fR can be any string (but should be what your \fIcrond\fR provides).
 .Sp
 To omit \fB\s-1TZ\s0\fR, use \fB\-\-notz\fR.
-.IP "\fB\-L\fR \fB\-\-locale\fR=\fIspecifier\fR" 4
-.IX Item "-L --locale=specifier"
+.IP "\fB\-L\fR \fB\-\-locale\fR=\fIspecifier\fR \fB\-\-nolocale\fR" 4
+.IX Item "-L --locale=specifier --nolocale"
 Specifies the locale from which the default codeset for e\-mails is determined.  See Subtleties, below for details.
 .IP "\fB\-\-version\fR" 4
 .IX Item "--version"
@@ -251,7 +257,11 @@ By default, the operator's locale is used to determine the default codeset for e
 However, \fIcrond\fR runs as a daemon, and \fIascron\fR can't determine what locale it would use.  The operator's locale
 is used since there's a reasonable chance that it is also the system default, and the \f(CW\*(C`C/POSIX\*(C'\fR locale is out of favor.
 .PP
+However, \f(CW\*(C`LC_COLLATE\*(C'\fR is set to \f(CW\*(C`C\*(C'\fR for compatibility with \fIcrond\fR.
+.PP
 To get the right results for your system, you can run \fIascron\fR \f(CW\*(C`LC_ALL=fr_FR ascron ...\*(C'\fR, or use \fB\-\-locale\fR.
+.PP
+If \f(CW\*(C`LC_*\*(C'\fR environment variables are set in tables, they apply to (subsequent) jobs.
 .SS "Multi-level security"
 .IX Subsection "Multi-level security"
 \&\fIcrond\fR identifies its jobs to MLS-equipped systems (e.g. \s-1SELINUX, APPARMOR\s0) so that they get the correct security contexts assigned.
