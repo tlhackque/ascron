@@ -24,9 +24,10 @@ ascron - Run cron jobs from a terminal
 # SYNOPSIS
 
     ascron   command | job-regexp
-              --format  --job    --list    --mail-action --locale --match
-              --system  --table  --user    --debug=file  --tz     --notz
-              --help    --man    --version
+              --format  --job     --list    --mail-action --locale --match
+              --system  --table   --user    --debug=file  --tz      --notz
+              --detach  --pidfile
+              --help    --man     --version
 
 # DESCRIPTION
 
@@ -54,59 +55,73 @@ See **EXAMPLES** for how these interact.
 The following options are used to select the _crontab_(s) searched, and the job to be run.
 
 **system** _crontabs_ include the user under which a job runs.  These include `/etc/crontab` and `/etc/cron.d/*`.
-**user** _crontabs_ do not include the user.  The user is implied by the Icrontab>'s location or by the **--format** option.  The us
-er may also be specified by the **--user** option.
+**user** _crontabs_ do not include the user.  The user is implied by the Icrontab>'s location or by the **--format** option.  The user may also be specified by the **--user** option, which also implies a default table.
 
-Options contained in `~/.ascron` will be applied before any specified on the command line.
+Options contained in `~/.ascron` will be applied before any specified on the command line.  The **--no** forms of options may be useful on the command line to override `~/.ascron`.
 
-- **-d** **--debug**=`file`
+- **-d** **--debug**=`file` **--nodebug**
 
     Writes a detailed log of processing events to `file`.  `file` may be '-' for `stderr`.
 
     While intended for debugging _ascron_, some of the detail may be helpful for understanding how _cron_ processes a job.
 
-- **-f** **--format**=_system_|_user_
+- **-D** **--\[no\]detach** **--\[no\]daemon**
+
+    _ascron_ daemonizes itself before running the job.  This frees your terminal when executing long-running jobs, and is how _crond_ runs.
+
+    This does not affect **--debug** output if `stderr` is specified.
+
+    Ues **--pidfile** if you want to capture the PID of the daemon.
+
+    Consider placing **--detach** in your `.ascron` if long-running jobs are the norm.
+
+- **-f** **--format**=_automatic|system_|_user_
 
     Specifies the format of the _crontab_(s) read by the command.
 
+    _automatic_, the default, determines the format using **--table**, **--user**, and/or **--job**.
+
 - **-j** **--job**
 
-    Specifies the job(s) to be located in the _crontab_(s).  The command arguments are unanchored regular expressions that match eac
-h _crontab_ command.  If more than one argument is specified, they are combined with _or_; that is, a command is selected if any of
-the arguments matches.  By default, the first matching command will be used, but **--match** can specify a subsequent match.
+    Specifies the job(s) to be located in the _crontab_(s).  The command arguments are unanchored regular expressions that match each _crontab_ command.  If more than one argument is specified, they are combined with _or_; that is, a command is selected if any of the arguments matches.  By default, the first matching command will be used, but **--match** can specify a subsequent match.
 
-    If **--job** is not specified, the command is specified by the command line arguments.
+    If **--job** is not specified or **--nojob**/**--command**/**-c** is specified, the command is specified by the command line arguments.
 
-- **-l** **--list**
+- **-l** **--\[no\]list**
 
-    With **--job**, lists all matching jobs (and does not execute any).  Useful with multiple matches to determine a value of **--ma
-tch** that will select the desired job.
+    With **--job**, lists all matching jobs (and does not execute any).  Useful with multiple matches to determine a value of **--match** that will select the desired job.
 
 - **-M** **--mail-action**=_discard_|_display_|_send_
 
-    Output on `stdout` or `stderr` from _cron_ jobs is (usually) e-mailed; the destination, source, subject, and format are controll
-ed by environment variables set om tje _crontab_.
+    Output on `stdout` or `stderr` from _cron_ jobs is (usually) e-mailed; the destination, source, subject, and format are controlled by environment variables set in the _crontab_.
 
-    By default, _ascron_ faithfully emulates this behavior -- which can be inconvenient for debugging jobs.  **--mail-action** can o
-verride the default action so that the mail message is displayed (on `stdout`) or discarded.
+    By default, _ascron_ faithfully emulates this behavior -- which can be inconvenient for debugging jobs.  **--mail-action** can override the default action so that the mail message is displayed (on `stdout`) or discarded.
 
-- **-t** **--table**=`file`
+- **-p** **--pidfile**=`file` **--nopidfile**
+
+    Write the PID of the job to `file` as _j:&lt;pid_>.
+
+    When daemonizing, also write the PID of the daemon to `file` as _d:&lt;pid_>.  The order of the PIDs is unpredictable.
+
+- **-t** **--table**=`file` **--notable**
 
     Selects the _crontab_ file used to extract environment variables, and (with **--job**) the command.
 
-    Note that without **--job**, the job defined on the command line is processed as if it is located at the end of the _crontab_.
-Thus, if an environment variable is re-defined in a _crontab_, the last definition is used.
+    Note that without **--job**, the job defined on the command line is processed as if it is located at the end of the _crontab_.  Thus, if an environment variable is re-defined in a _crontab_, the last definition is used.
 
-- **-u** **--user**=_name_
+    If not specified or defaulted, all system tables are read.
+
+- **-u** **--user**=_name_ **--nouser**
 
     Specifies the username to be matched when locating a job or table; under which the job executes.
 
-    If a username is required, but not determined implicitly or by **--user**, the username is obtained from the opertor's (effectiv
-e) _UID_.
+    If **--table** is not specified, **--user** implies the user's private table.
+
+    If a username is required, but not determined implicitly or by **--user**, the username is obtained from the opertor's (effective) _UID_.
 
 - **-m** **--match**=_n_
 
-    Specifies that the _n_th matching job is to be used.  The first match is numbered 1.
+    Specifies that the _n_th matching job is to be used.  The first (and default) match is numbered 1.
 
 - **-z** **--tz**=i&lt;zone>  **-Z** **--notz**
 
@@ -118,7 +133,7 @@ e) _UID_.
 
     To omit **TZ**, use **--notz**.
 
-- **-L** **--locale**=_specifier_
+- **-L** **--locale**=_specifier_ **--nolocale**
 
     Specifies the locale from which the default codeset for e-mails is determined.  See [Subtleties](https://metacpan.org/pod/Subtleties), below for details.
 

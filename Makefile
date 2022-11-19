@@ -16,6 +16,10 @@ INSTALL_DATA = $(INSTALL) -m 644
 # Specify key="deadbeef" or key="deadbeef beeffeed" on command line (else default)
 GPG = gpg
 
+PERL = perl
+POD2MAN = pod2man
+POD2MARKDOWN = pod2markdown
+
 SHELL := bash
 
 # Usage:
@@ -41,14 +45,33 @@ endif
 
 kittypes = gz xz lzop
 
-.PHONY : all
+.PHONY : all README.md
 
-all : ascron$(man1ext)
+all : ascron$(man1ext) README.md
 
 # Compilations: man page from pod in ascron
 
 ascron$(man1ext) : ascron Makefile
-	pod2man --center "Interactive cron simulator"  --release "$$(./ascron --version | sed -e'1!d;s/version //')" $< $@
+	$(POD2MAN) --center "Interactive cron simulator"  --date "$$(date -r ascron '+%d-%b-%Y')"\
+		--release "ascron V$(tarversion)" $< $@
+
+# Replace help section of README.md with the appropriate sections of POD from ascron
+# Extract the sections as POD, convert to markdown, copy README.md up to the help,
+# and append the new markdown.
+
+README.md : ascron
+	$(PERL)  -Mwarnings -Mstrict <$< \
+	-e'my $$hlp = ""; while( <> ) {' \
+	-e'my $$t = /^=head1 NAME/../^=head1 Subtleties/;' \
+	-e'$$hlp .= $$_ if( $$t && $$t !~ /E0$$/ ); }' \
+	-e'printf( "=pod\n\n%s\n=cut\n", $$hlp );'| \
+	$(POD2MARKDOWN) | \
+	$(PERL) -Mwarnings -Mstrict \
+	-e'open( my $$rm, "<", "$@" ) or die "$@: $$!\n";' \
+	-e'while( <$$rm> ) { last if( /^# NAME/ );' \
+	-e'print; }' \
+	-e'print while( <> );' >$@.tmp
+	mv $@.tmp $@
 
 # Make tarball kits - various compressions
 
