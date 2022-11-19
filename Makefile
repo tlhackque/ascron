@@ -17,6 +17,7 @@ INSTALL_DATA = $(INSTALL) -m 644
 GPG = gpg
 
 PERL = perl
+PERLTIDY = perltidy
 POD2MAN = pod2man
 POD2MARKDOWN = pod2markdown
 
@@ -27,8 +28,9 @@ SHELL := bash
 
 # Extract version from ascron source
 
-tarversion != sed -ne"/our \$$VERSION \+=/s/^.*= *['\"]\\?V\\?\\([0-9.]\\+\\).*$$/\\1/p;" ascron
-kitname = ascron-$(tarversion)
+kitversion != $(PERL) ascron -vv
+kitname = ascron-$(kitversion)
+kitowner = 0:0
 
 # If in a Git working directory and the git command is available,
 # get the last tag and wd state in case making a distribution
@@ -41,9 +43,17 @@ ifneq "$(strip $(shell [ -d '.git' ] && echo 'true' ))" ""
   endif
 endif
 
-# file types from which tar can infer compression
+# file types from which tar can infer compression, if tool is installed
 
-kittypes = gz xz lzop
+# kittypes = gz xz lzop lz lzma Z zst bz bz2
+
+# kittypes to build
+
+kittypes = gz xz
+
+# Files to package
+
+kitfiles = INSTALL README.md ascron ascron$(man1ext) Makefile
 
 .PHONY : all README.md
 
@@ -53,7 +63,7 @@ all : ascron$(man1ext) README.md
 
 ascron$(man1ext) : ascron Makefile
 	$(POD2MAN) --center "Interactive cron simulator"  --date "$$(date -r ascron '+%d-%b-%Y')"\
-		--release "ascron V$(tarversion)" $< $@
+		--release "ascron V$(kitversion)" $< $@
 
 # Replace help section of README.md with the appropriate sections of POD from ascron
 # Extract the sections as POD, convert to markdown, copy README.md up to the help,
@@ -85,18 +95,18 @@ unsigned-dist : $(foreach type,$(kittypes),$(kitname).tar.$(type))
 
 # Tarball build directory
 
-$(kitname) :  ascron ascron$(man1ext) Makefile INSTALL
-	rm -rf $(kitname)
-	mkdir -p $(kitname)
-	cp -p $^ $(kitname)
-	chown -R 0.0 $(kitname)
+$(kitname)/% : %
+	@mkdir -p $(dir $@)
+	@-chown $(kitowner) $(dir $@)
+	cp -p $< $@
+	@-chown $(kitowner) $@
 
 # Clean up after builds
 
 .PHONY : clean
 
 clean:
-	rm -rf $(kitname) $(foreach type,$(kittypes),$(kitname).tar.$(type)*)
+	rm -rf $(kitname) $(foreach type,$(kittypes),$(kitname).tar.$(type){,.sig})
 
 # Install program and doc
 
@@ -123,19 +133,19 @@ installdirs :
 
 define make_tar =
 
-%.tar.$(1) : %
+%.tar.$(1) : $$(foreach f,$$(kitfiles), %/$$(f))
 	tar -caf $$@ $$^
-	chown 0.0 $$@
+	@-chown $(kitowner) $$@
 ifneq ($(strip $(gitcmd)),)
   ifeq ($(strip $(gitdirty)),)
-    ifeq ($(strip $(gittag)),V$(tarversion))
-	@echo " *** Not tagging because V$(tarversion) already exists"
+    ifeq ($(strip $(gittag)),V$(kitversion))
+	@echo " *** Not tagging because V$(kitversion) already exists"
 	@echo ""
     else
-	-git tag -f V$(tarversion)
+	-git tag -f V$(kitversion)
     endif
   else
-	@echo " *** Not tagging V$(tarversion) because working directory is dirty"
+	@echo " *** Not tagging V$(kitversion) because working directory is dirty"
 	@echo ""
   endif
 endif
@@ -147,6 +157,13 @@ $(foreach type,$(kittypes),$(eval $(call make_tar,$(type))))
 # create a detached signature for a file
 
 %.sig : % Makefile
-	rm -f $<.sig
-	$(GPG) --output $@ --detach-sig $(if $(key),$(foreach k,$(key), --local-user "$(k)"),) $(basename $@)
-	chown 0.0 $@
+	@-rm -f $<.sig
+	$(GPG) --output $@ --detach-sig $(foreach k,$(key), --local-user "$(k)") $(basename $@)
+	@-chown $(kitowner) $@
+
+# perltidy
+
+.PHONY : tidy
+
+tidy : ascron
+	$(PERLTIDY) -b $<

@@ -30,12 +30,12 @@ my @argv = @ARGV;
 # The following may be distribution-specific
 
 my( $usertable, @systables ) = ( '/var/spool/cron/%s', '/etc/crontab', '/etc/cron.d/*' );
-my $systableRE  = join( '|', @systables );
-my $systable    = '*system*';
-my $mailer      = '/usr/lib/sendmail';
-my $mailcmd     = "%s -i -F'Cron Daemon' -f %s -odi -oem %s";
-my $localtime   = "/etc/localtime";        # Olson timezone; zoneinfo line or file
-my $timezone    = "/etc/timezone";         # Debian timezone - contains timezone
+my $systableRE = join( '|', @systables );
+my $systable   = '*system*';
+my $mailer     = '/usr/lib/sendmail';
+my $mailcmd    = "%s -i -F'Cron Daemon' -f %s -odi -oem %s";
+my $localtime  = "/etc/localtime";  # Olson timezone; zoneinfo line or file
+my $timezone   = "/etc/timezone";   # Debian timezone - contains timezone
 
 # No distribution-specific tailoring should be required from here on
 
@@ -48,8 +48,9 @@ $emptyenv{TZ} = $ENV{TZ} if( defined $ENV{TZ} );
 my( $log, $havegtod, $startt, $startu );
 
 # Parse (and default) the command line
-my( $debug, $detach, $job,  $match, $help, $list, $locale, $man, $pidfile, $sendmail,
-    $table, $format, $notz, $user,  $version );
+my( $debug, $detach, $job,  $match,   $help,
+    $list,  $locale, $man,  $pidfile, $sendmail,
+    $table, $format, $notz, $user,    $version );
 
 my %formats  = ( abbrev( qw/automatic system user/ ) );
 my %sendmail = ( abbrev( qw/discard display send/ ) );
@@ -76,7 +77,7 @@ if( defined $ENV{HOME} && open( $ini, "<", "$ENV{HOME}/.$SELF" ) ) {
 sub opt_format {
     my( $n, $v ) = @_;
     if( ( my $k = $formats{$v} ) ) {
-        $format = $k eq 'automatic'? undef : $k;
+        $format = $k eq 'automatic' ? undef : $k;
     } else {
         die( "--format must be 'automatic', 'system' or 'user'\n" );
     }
@@ -116,7 +117,7 @@ GetOptions(
         'notz|Z'           => sub { delete $emptyenv{TZ}; $notz = 1; },
         'help|h'           => \$help,
         'man'              => \$man,
-        'version'          => \$version,
+        'version|v+'       => \$version,
           ) or die( "Error in command\n" );
 
 # Handle help, man, & version
@@ -132,7 +133,11 @@ if( $help || $man ) {
 }
 
 if( $version ) {
-    printf( "%s version %s\n%s\n", $SELF, $VERSION, $copyright );
+    if( $version > 1 ) {
+        printf( "%s\n", substr( $VERSION, 1 ) );
+    } else {
+        printf( "%s version %s\n%s\n", $SELF, $VERSION, $copyright );
+    }
     exit 0;
 }
 
@@ -306,11 +311,15 @@ if( defined $job ) {  # Job from a crontab
 
 if( $debug ) {
     debug( "Job location: %s\n", defined $job ? "crontab" : "command line" );
-    my %syms = ( table       => $table, format => $format, user => $user,
+    my %syms = ( table       => $table,
+                 format      => $format,
+                 user        => $user,
                  defaultUser => $defaultUser,
-                 matchRE     => $matchRE, jobcmd => $jobcmd );
+                 matchRE     => $matchRE,
+                 jobcmd      => $jobcmd );
     foreach my $sym ( sort keys %syms ) {
-        debug( "%s => '%s'", $sym, defined $syms{$sym} ? $syms{$sym} : 'undef' );
+        debug(  "%s => '%s'", $sym,
+                defined $syms{$sym} ? $syms{$sym} : 'undef' );
     }
 }
 
@@ -367,7 +376,9 @@ foreach my $file ( defined $table
                 if( $match == $hitnum ) {
                     next if( $list );
                     dojob(  $cmd,
-                            defined $usr ? $usr : defined $user ? $user : $defaultUser,
+                              defined $usr  ? $usr
+                            : defined $user ? $user
+                            : $defaultUser,
                             \%env );
                     last TABLE;
                 }
@@ -403,7 +414,8 @@ if( $debug ) {
                 strftime( '%T', gmtime $endt ) .
                 ( $havegtod ? sprintf( '.%06u', $endu ) : '' ) );
     } else {
-        debug(  "Elapsed time: %ud %s\n", $endt / 86400,
+        debug(  "Elapsed time: %ud %s\n",
+                $endt / 86400,
                 strftime( '%T', gmtime( $endt % 86400 ) ) .
                 ( $havegtod ? sprintf( '.%06u', $endu ) : '' ) );
     }
@@ -418,7 +430,7 @@ sub dojob {
 
     debug( "Executing job %s", $cmd );
 
-    # Separate command from any stdin data and handle % => \n and \%, \\ substitutions
+# Separate command from any stdin data and handle % => \n and \%, \\ substitutions
     my @cmd = split( //, $cmd );
     $cmd = '';
     my $stdin;
@@ -474,7 +486,8 @@ sub dojob {
             $groups{$gi} = 1 if( exists $m{$name} && $gi ne 0 );
         }
         $groups = join(
-                ' ', $gid, $gid,
+                ' ',
+                $gid, $gid,
                 map { $_ != $gid ? $_ : () } sort { $a <=> $b } keys %groups );
     }
     if( $debug ) {
@@ -550,8 +563,8 @@ sub dojob {
                     $> = $< = $uid;
                     if( $! ) {
                         printf STDERR (
-                                "Unable to assume %s's identity: %s\n", $user,
-                                $! );
+                                "Unable to assume %s's identity: %s\n",
+                                $user, $! );
                         exit 1;
                     }
                 }
@@ -609,9 +622,8 @@ sub dojob {
                     my $n = getgrgid( $g );
                     $g = defined $n ? sprintf( '%u(%s)', $g, $n ) : $g;
                 }
-                debug(  "Job running as PID %u, uid=%u(%s), gid=%s, groups=%s", $pid,
-                        $uid,
-                        $name, $g[0], join( ',', @g ) );
+                debug(  "Job running as PID %u, uid=%u(%s), gid=%s, groups=%s",
+                       $pid, $uid, $name, $g[0], join( ',', @g ) );
             } else {
                 debug( "Job running as PID %u", $pid );
             }
@@ -630,8 +642,9 @@ sub dojob {
         debug( "Discarding mail" ) if( tell( $jout ) != 0 && $wantmail );
         $wantmail = 0;
     }
-    unless( tell( $jout ) != 0 && $wantmail ) {
+    unless( (my $ol = tell( $jout )) != 0 && $wantmail ) {
         close( $jout );
+        debug( "No output generated\n" ) if( $ol == 0 );
         return;
     }
     debug( "Generating e-mail" );
@@ -710,8 +723,8 @@ HDR
         printf $mail ( "X-Cron-Env: <%s=%s>\n", $e, $env->{$e} );
     }
     printf $mail (
-            "X-ascron-Logfile: %s %s\n", $log,
-            strftime( "%d-%b-%Y %T", localtime( time ) ) )
+            "X-ascron-Logfile: %s %s\n",
+            $log, strftime( "%d-%b-%Y %T", localtime( time ) ) )
         if( defined $log );
     print $mail ( "\n" );
 
@@ -724,7 +737,9 @@ HDR
         } else {
             $reason = procsts;
         }
-        $reason = sprintf( "%s:%s\n", $sendmail eq 'display' ? 'cat' : $mailer, $reason );
+        $reason = sprintf(
+                "%s:%s\n",
+                $sendmail eq 'display' ? 'cat' : $mailer, $reason );
         debug( $reason );
         die( $reason );
     }
@@ -759,7 +774,8 @@ sub procsts {
     } else {
         if( $? & 127 ) {
             require Config;
-            my $n = ( split( ' ', $Config::Config{sig_name} ) )[ $? & 127 ] || '??';
+            my $n =
+                ( split( ' ', $Config::Config{sig_name} ) )[ $? & 127 ] || '??';
             $result .= sprintf( " killed by signal %u (%s)", $? & 127, $n );
         }
         $result .= sprintf( " exit code %d", $? >> 8 ) if( $? >> 8 );
