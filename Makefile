@@ -129,7 +129,7 @@ define make_tar =
 ifneq ($(strip $(gitcmd)),)
   ifeq ($(strip $(gitdirty)),)
     ifeq ($(strip $(gittag)),V$(tarversion))
-	@echo " *** Not tagging because $(gittag)/V$(tarversion) already exists"
+	@echo " *** Not tagging because V$(tarversion) already exists"
 	@echo ""
     else
 	-git tag -f V$(tarversion)
