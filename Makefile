@@ -70,6 +70,7 @@ ascron$(man1ext) : ascron Makefile
 # and append the new markdown.
 
 README.md : ascron
+	@$(POD2MARKDOWN)  </dev/null >/dev/null
 	$(PERL)  -Mwarnings -Mstrict <$< \
 	-e'my $$hlp = ""; while( <> ) {' \
 	-e'my $$t = /^=head1 NAME/../^=head1 Subtleties/;' \
