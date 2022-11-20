@@ -53,7 +53,7 @@ kittypes = gz xz
 
 # Files to package
 
-kitfiles = INSTALL README.md ascron ascron$(man1ext) Makefile
+kitfiles = INSTALL README.md LICENSE ascron ascron$(man1ext) Makefile
 
 .PHONY : all README.md
 
