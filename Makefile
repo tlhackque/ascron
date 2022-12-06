@@ -33,7 +33,7 @@ kitname = ascron-$(kitversion)
 kitowner = 0:0
 
 # If in a Git working directory and the git command is available,
-# get the last tag and wd state in case making a distribution
+# get the last tag in case making a distribution.
 
 ifneq "$(strip $(shell [ -d '.git' ] && echo 'true' ))" ""
   gitcmd != command -v git
@@ -137,7 +137,10 @@ define make_tar =
 	tar -caf $$@ $$^
 	@-chown $(kitowner) $$@
 ifneq ($(strip $(gitcmd)),)
-	@if [ -n "$$$$(git diff --stat)" ]; then echo " *** Not tagging V$(kitversion) because working directory is dirty"; echo ""; else true; fi
+	@if [ -n "$$$$(git diff --stat)" ]; then \
+	    echo " *** Not tagging V$(kitversion) because working directory is dirty"; echo ""; \
+	    else true; \
+	fi
   ifeq ($(strip $(gittag)),V$(kitversion))
 	@echo " *** Not tagging because V$(kitversion) already exists"
 	@echo ""
