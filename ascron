@@ -8,11 +8,11 @@ my $copyright =
 use warnings;
 use strict;
 
-our $VERSION = 'V1.0.5';
+our $VERSION = 'V1.0.6';
 
 use Cwd(   qw/realpath getcwd/ );
 use Errno( qw/EAGAIN/ );
-use Fcntl( qw/:seek/ );
+use Fcntl( qw/:seek :mode/ );
 use File::Basename;
 use File::Temp;
 use Getopt::Long( qw(:config bundling) );
@@ -30,19 +30,21 @@ my @argv = @ARGV;
 # The following may be distribution-specific
 
 my( $usertable, @systables ) = ( '/var/spool/cron/%s', '/etc/crontab', '/etc/cron.d/*' );
-my $systableRE = join( '|', @systables );
-my $systable   = '*system*';
-my $mailer     = '/usr/lib/sendmail';
-my $mailcmd    = "%s -i -F'Cron Daemon' -f %s -odi -oem %s";
-my $localtime  = "/etc/localtime";  # Olson timezone; zoneinfo line or file
-my $timezone   = "/etc/timezone";   # Debian timezone - contains timezone
+my $systableRE  = join( '|', map { s/[*]/.*/g; $_ } @systables );
+my $usertableRE = sprintf( $usertable, '(.*)' );
+my $systable    = '*system*';
+my $mailer      = '/usr/lib/sendmail';
+my $mailcmd     = "%s -i -F'Cron Daemon' -f %s -odi -oem %s";
+my $localtime   = "/etc/localtime";  # Olson timezone; zoneinfo line or file
+my $timezone    = "/etc/timezone";   # Debian timezone - contains timezone
 
 # No distribution-specific tailoring should be required from here on
 
 my $defaultUser = getpwuid( $> );
 my %emptyenv    = ( SHELL => '/bin/sh', );
 
-$systableRE = qr/^($systableRE)$/;
+$systableRE   = qr/^($systableRE)$/;
+$usertableRE  = qr/^$usertableRE$/;
 $emptyenv{TZ} = $ENV{TZ} if( defined $ENV{TZ} );
 
 my( $log, $havegtod, $startt, $startu );
@@ -258,6 +260,9 @@ $sendmail = 'send' unless( defined $sendmail );
 # Reasonable defaults for the inter-related table, format and user
 if( defined $table && ( $table eq $systable || $table =~ /$systableRE/ ) ) {
     $format = 'system';
+} elsif( defined $table && !defined $format && $table =~ /$usertableRE/ ) {
+    $format = 'user';
+    $user   = basename( $table ) unless( defined $user );
 } elsif( !defined $table && !defined $format ) {
     if( defined $user ) {
         $table  = sprintf( $usertable, $user );
@@ -283,6 +288,16 @@ if( defined $table && ( $table eq $systable || $table =~ /$systableRE/ ) ) {
     $format = 'user';
     $table  = sprintf( $usertable, defined $user ? $user : $defaultUser )
         unless( defined $table );
+}
+
+if(    $format eq 'user'
+    && defined $user
+    && defined $table
+    && $table =~ /$usertableRE/
+    && $1 ne $user ) {
+    printf STDERR ( "Specified user '%s' does not match table owner '%s' of %s\n", $user,
+                    $1, $table );
+    exit 1;
 }
 
 # Job matching and environment
@@ -329,6 +344,10 @@ foreach my $file ( defined $table
                    && $table ne $systable ? $table : glob join( ' ', @systables ) ) {
 
     debug( "Processing %s", $file );
+    unless( -f $file ) {
+        printf STDERR ( "%s: Not a regular file, skipping\n", $file );
+        next TABLE;
+    }
     %env = %emptyenv;
 
     open( my $tbl, '<', $file ) or do {
@@ -336,6 +355,25 @@ foreach my $file ( defined $table
         debug( "%s: %s", $file, $! );
         next TABLE;
     };
+
+    if( $file =~ /(?:$systableRE)|(?:$usertableRE)/ ) {
+        my $mode = ( stat $tbl )[2];
+
+        # cron disallows write or execute for anyone but owner.
+        # Don't enforce for files outside system areas.
+
+        if( $mode & ( S_IWGRP | S_IWOTH | S_IXGRP | S_IXOTH ) ) {
+            my $gp  = $mode & ( S_IWGRP | S_IXGRP );
+            my $op  = $mode & ( S_IWOTH | S_IXOTH );
+            my $who = ( $gp && $op ) ? 'group and other' : $gp ? 'group' : 'other';
+            my $wrt = $mode & ( S_IWGRP | S_IWOTH );
+            my $xct = $mode & ( S_IXGRP | S_IXOTH );
+            my $what =
+                ( $wrt && $xct ) ? "write and execute" : $wrt ? 'write' : 'execute';
+
+            debug( "%s skipped: permissions allow %s to %s\n", $file, $who, $what );
+        }
+    }
 
     while( <$tbl> ) {
 
@@ -642,7 +680,7 @@ sub dojob {
         debug( "Discarding mail" ) if( tell( $jout ) != 0 && $wantmail );
         $wantmail = 0;
     }
-    unless( (my $ol = tell( $jout )) != 0 && $wantmail ) {
+    unless( ( my $ol = tell( $jout ) ) != 0 && $wantmail ) {
         close( $jout );
         debug( "No output generated\n" ) if( $ol == 0 );
         return;

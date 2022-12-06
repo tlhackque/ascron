@@ -39,7 +39,6 @@ ifneq "$(strip $(shell [ -d '.git' ] && echo 'true' ))" ""
   gitcmd != command -v git
   ifneq "$(strip $(gitcmd))" ""
     gittag != git tag | tail -n1
-    gitdirty != git diff --stat
   endif
 endif
 
@@ -138,16 +137,12 @@ define make_tar =
 	tar -caf $$@ $$^
 	@-chown $(kitowner) $$@
 ifneq ($(strip $(gitcmd)),)
-  ifeq ($(strip $(gitdirty)),)
-    ifeq ($(strip $(gittag)),V$(kitversion))
+	@if [ -n "$$$$(git diff --stat)" ]; then echo " *** Not tagging V$(kitversion) because working directory is dirty"; echo ""; else true; fi
+  ifeq ($(strip $(gittag)),V$(kitversion))
 	@echo " *** Not tagging because V$(kitversion) already exists"
 	@echo ""
-    else
-	-git tag -f V$(kitversion)
-    endif
   else
-	@echo " *** Not tagging V$(kitversion) because working directory is dirty"
-	@echo ""
+	-git tag -f V$(kitversion)
   endif
 endif
 
