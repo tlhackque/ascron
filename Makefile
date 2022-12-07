@@ -115,6 +115,8 @@ clean:
 install : ascron ascron$(man1ext) installdirs
 	$(INSTALL_PROGRAM) ascron $(DESTDIR)$(bindir)/ascron
 	-$(INSTALL_DATA) ascron$(man1ext) $(DESTDIR)$(man1dir)/ascron$(man1ext)
+	-@$(PERL) -MTime::ParseDate -e'exit 0;' >/dev/null 2>&1 || \
+	    echo " *** Perl module Time::ParseDate is not installed.  It is not required, but is recommended."
 
 # un-install
 

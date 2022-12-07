@@ -1,10 +1,14 @@
 To install ascron:
 
+Make sure Perl is installed.
+
 unpack tarball, e.g.:
   tar -xzf ascron-1.000.tgz
 cd to the directory
 
-Make sure Perl is installed.
+The Perl module Time::ParseDate is not required, but is highly recommended.
+It can be istalled from your distribution (e.g. perl-Time-ParseDate or
+libtime-parsedate-perl), or from cpan (cpan install Time::ParseDate).
 
 make install                # to /usr/local
 make install prefix=/opt    # to /opt

@@ -3,6 +3,8 @@
 my $copyright =
     "Copyright (c) 2022 Timothe Litt litt _at acm.org\nUse --man for license.";
 
+# cron timespec decoding largely from Schedule::Cron
+
 # Run a job once, in cron context
 
 use warnings;
@@ -21,6 +23,9 @@ use Sys::Hostname;
 use Text::Abbrev;
 
 sub dojob;
+sub timeof;
+sub xtime;
+sub nearest;
 sub debug;
 sub procsts;
 
@@ -47,7 +52,34 @@ $systableRE   = qr/^($systableRE)$/;
 $usertableRE  = qr/^$usertableRE$/;
 $emptyenv{TZ} = $ENV{TZ} if( defined $ENV{TZ} );
 
-my( $log, $havegtod, $startt, $startu );
+my( $log, $havegtod, $havetimedate, $startt, $startu );
+
+# Time decoding
+
+my @dow = qw( Sunday Monday Tuesday Wednesday Thursday Friday Saturday Sunday );
+
+# minute hour dom month dow
+my @namemap = (
+        {},
+        {},
+        {},
+        { jan => 1, feb => 2, mar => 3, apr => 4,  may => 5,  jun => 6,
+          jul => 7, aug => 8, sep => 9, oct => 10, nov => 11, dec => 12, },
+        { sun => 0, mon => 1, tue => 2, wed => 3, thu => 4, fri => 5, sat => 6, },
+);
+my @limits = ( [ 0, 59 ],
+               [ 0, 23 ],
+               [ 0, 31 ],
+               [ 0, 12 ],
+               [ 0, 7 ],
+             );
+my @valmap = ( {},
+               {},
+               { 0 => 1 },
+               { 0 => 1 },
+               { 7 => 0 },
+               {},
+             );
 
 # Parse (and default) the command line
 my( $debug, $detach, $job,  $match,   $help,
@@ -142,6 +174,9 @@ if( $version ) {
     }
     exit 0;
 }
+
+$havetimedate =
+    eval { require Time::ParseDate; Time::ParseDate->import( qw/parsedate/ ); 1; };
 
 # Setup debug logging
 
@@ -295,8 +330,9 @@ if(    $format eq 'user'
     && defined $table
     && $table =~ /$usertableRE/
     && $1 ne $user ) {
-    printf STDERR ( "Specified user '%s' does not match table owner '%s' of %s\n", $user,
-                    $1, $table );
+    printf STDERR (
+            "Specified user '%s' does not match table owner '%s' of %s\n", $user,
+            $1,                                                            $table );
     exit 1;
 }
 
@@ -380,6 +416,22 @@ foreach my $file ( defined $table
         # Comments, blank lines
         next if( /^\s*(?:#.*)?$/ );
 
+        my $line = $_;
+
+        # Timespec abbreviations
+        if( s/^\s*\@(\S+)\s+// ) {
+            my $xpn = { reboot   => "99 99 99 99 99",
+                        yearly   => "0 0 1 Jan *",
+                        annually => "0 0 1 Jan *",
+                        monthly  => "0 0 1 *   *",
+                        weekly   => "0 0 * *   Sun",
+                        daily    => "0 0 * *   *",
+                        hourly   => "0 * * *   *",
+                      }->{$1};
+            $xpn = "88 88 88 88 88" unless( defined $xpn );
+            $_   = "${xpn} $_";
+        }
+
         # Quoted assignments, unquoted assignments, job definitions
         if( /^\s*(\w+)\s*=\s*(['"'])(.*)\2$/ ) {
             $env{$1} = $3;
@@ -391,7 +443,7 @@ foreach my $file ( defined $table
 
             # Match job's command, ignoring schedule and (when present) user
             my( $min, $hr, $dom, $mon, $dow, $usr, $cmd );
-            s/^\s*//;
+            s/^\s+//;
             chomp;
             if( $format eq 'system' ) {
                 ( $min, $hr, $dom, $mon, $dow, $usr, $cmd ) =
@@ -409,8 +461,18 @@ foreach my $file ( defined $table
 
             if( $cmd =~ /$matchRE/ ) {
                 ++$hitnum;
-                printf( "%3u)%s:%u %s\n", $hitnum, $file, $., $_ );
-                debug( "%u)%s:%u %s", $hitnum, $file, $., $_ );
+                $line =~ s/^\s+//;
+                chomp $line;
+                printf( "%3u)%s:%u %s\n", $hitnum, $file, $., $line );
+                my $nextime = timeof( [ $min, $hr, $dom, $mon, $dow ] );
+                $nextime =
+                    $nextime >= 0
+                    ? strftime( "%a %d-%b-%Y %T", localtime( $nextime ) )
+                    : 'Unknown';
+                printf( "     Next cron run: %s\n", $nextime );
+                debug( "%u)%s:%u %s", $hitnum, $file, $., $line );
+                debug( "    Next cron run: %s\n", $nextime );
+
                 if( $match == $hitnum ) {
                     next if( $list );
                     dojob(  $cmd,
@@ -784,6 +846,243 @@ HDR
     debug( $sendmail eq 'display' ? "Mail would be sent" : "Mail sent" );
     close( $jout );
 
+    return;
+}
+
+# Time of next execution by cron
+sub timeof {
+    my( $timespec ) = @_;
+
+    return -1 unless( $havetimedate );
+
+    my @xpn;
+
+    for( my $i = 0; $i < @$timespec; ++$i ) {
+        my @when;
+        my @s = split( /,/, $timespec->[$i] );
+
+        while( @s ) {
+            my $f = shift @s;
+            $f =~ s,^\*(/.+)$,"$limits[$i][0]-$limits[$i][1]$1",e;
+
+            if( $f =~ m,^([^-]+)-([^-/]+)(?:/(.*))?$, ) {
+                my( $low, $high, $step ) = ( $1, $2, $3 );
+                $step = 1 unless $step;
+                if( $low !~ /^(\d+)/ ) {
+                    $low = $namemap[$i]{ lc $low };
+                }
+                if( $high !~ /^(\d+)/ ) {
+                    $high = $namemap[$i]{ lc $high };
+                }
+                return -1
+                    unless(    defined( $low )
+                            && defined( $high )
+                            && $low <= $high
+                            && $step =~ /^\d+$/ );
+
+                for( my $j = $low; $j <= $high; $j += $step ) {
+                    push @s, $j;
+                }
+            } else {
+                $f = $namemap[$i]{ lc $f } if( $f !~ /^(\d+|\*)$/ );
+                $f = $valmap[$i]{$f}       if( defined $f && exists( $valmap[$i]{$f} ) );
+                return -1
+                    unless( defined( $f )
+                            && ( $f eq '*'
+                                 || ( $f >= $limits[$i][0] && $f <= $limits[$i][1] ) ) );
+                push @when, $f;
+            }
+        }
+        push @xpn,
+            ( @when == 1 && $when[0] eq '*' ) ? ['*'] : [ sort { $a <=> $b } @when ];
+    }
+
+    $xpn[5] = [0];
+    my $now = time;
+    if( $xpn[2][0] ne '*' && $xpn[4][0] ne '*' ) {
+        my @x = @{ $xpn[4] };
+        $xpn[4] = ['*'];
+        my $t1 = xtime( $now, \@xpn );
+        return -1 if( $t1 < 0 );
+        $xpn[4] = \@x;
+        $xpn[2] = ['*'];
+        my $t2 = xtime( $now, \@xpn );
+        return -1 if( $t2 < 0 );
+        return ( $t1 < $t2 ) ? $t1 : $t2;
+    }
+    return xtime( $now, \@xpn );
+}
+
+# time from spec
+sub xtime {
+    my( $now, $xpn ) = @_;
+
+    my( $now_sec, $now_min, $now_hour, $now_mday, $now_mon, $now_wday, $now_year ) =
+        ( localtime( $now ) )[ 0, 1, 2, 3, 4, 6, 5 ];
+    $now_mon++;
+    $now_year += 1900;
+
+    my( $tgt_mon, $tgt_mday, $tgt_wday, $tgt_hour, $tgt_min, $tgt_sec, $tgt_year ) =
+        ( $now_mon, $now_mday, $now_wday, $now_hour, $now_min, $now_sec, $now_year );
+
+    while( $tgt_year <= $now_year + 1 ) {
+        if( $xpn->[3][0] ne '*' ) {
+            unless( defined( $tgt_mon = nearest( $tgt_mon, $xpn->[3] ) ) ) {
+                $tgt_mon = $xpn->[3][0];
+                $tgt_year++;
+            }
+        }
+        if( $xpn->[2][0] ne '*' ) {
+            if( $tgt_mon != $now_mon ) {
+                $tgt_mday = $xpn->[2][0];
+            } else {
+                unless( defined( $tgt_mday = nearest( $tgt_mday, $xpn->[2] ) ) ) {
+                    $tgt_mday = $xpn->[2][0];
+                    $tgt_mon++;
+                    if( $tgt_mon > 12 ) {
+                        $tgt_mon = 1;
+                        $tgt_year++;
+                    }
+                    next;
+                }
+            }
+        } else {
+            $tgt_mday = ( $tgt_mon == $now_mon ? $tgt_mday : 1 );
+        }
+        if( $xpn->[4][0] ne '*' ) {
+            $tgt_wday = nearest( $tgt_wday, $xpn->[4] );
+            $tgt_wday = $xpn->[4][0] unless $tgt_wday;
+
+            my( $mon, $mday, $year );
+            $tgt_mday = 1 if $tgt_mon != $now_mon;
+
+            my $t = parsedate(
+                         sprintf( "%4.4d/%2.2d/%2.2d", $tgt_year, $tgt_mon, $tgt_mday ) );
+            ( $mon, $mday, $year ) = (
+                              localtime(
+                                  parsedate(
+                                      "$dow[$tgt_wday]", PREFER_FUTURE => 1, NOW => $t - 1
+                                  ) ) )[ 4, 3, 5 ];
+            $mon++;
+            $year += 1900;
+
+            if( $mon != $tgt_mon || $year != $tgt_year ) {
+                $tgt_mon  = $mon;
+                $tgt_year = $year;
+                $tgt_mday = 1;
+                $tgt_wday = (
+                        localtime(
+                            parsedate(
+                                sprintf(
+                                    "%4.4d/%2.2d/%2.2d",
+                                    $tgt_year, $tgt_mon, $tgt_mday ) ) ) )[6];
+                next;
+            }
+            $tgt_mday = $mday;
+        } else {
+            unless( $tgt_mday ) {
+                $tgt_mday = ( $tgt_mon == $now_mon ? $tgt_mday : 1 );
+            }
+        }
+        if( $xpn->[1][0] ne '*' ) {
+            if( $tgt_mday != $now_mday || $tgt_mon != $now_mon || $tgt_year != $now_year )
+            {
+                $tgt_hour = $xpn->[1][0];
+            } else {
+                unless( defined( $tgt_hour = nearest( $tgt_hour, $xpn->[1] ) ) ) {
+                    $tgt_hour = $xpn->[1][0];
+                    my $t = parsedate(
+                            sprintf(
+                                "%2.2d:%2.2d:%2.2d %4.4d/%2.2d/%2.2d",
+                                $tgt_hour, $tgt_min, $tgt_sec, $tgt_year, $tgt_mon,
+                                $tgt_mday ) );
+                    ( $tgt_mday, $tgt_mon, $tgt_year, $tgt_wday ) =
+                        ( localtime( parsedate( "+ 1 day", NOW => $t ) ) )[ 3, 4, 5, 6 ];
+                    $tgt_mon++;
+                    $tgt_year += 1900;
+                    next;
+                }
+            }
+        } else {
+            $tgt_hour = ( $tgt_mday == $now_mday ? $tgt_hour : 0 );
+        }
+        if( $xpn->[0][0] ne '*' ) {
+            if(    $tgt_hour != $now_hour
+                || $tgt_mday != $now_mday
+                || $tgt_mon != $tgt_mon
+                || $tgt_year != $now_year ) {
+                $tgt_min = $xpn->[0][0];
+            } else {
+                unless( defined( $tgt_min = nearest( $tgt_min, $xpn->[0] ) ) ) {
+                    $tgt_min = $xpn->[0][0];
+                    my $t = parsedate(
+                            sprintf(
+                                "%2.2d:%2.2d:%2.2d %4.4d/%2.2d/%2.2d",
+                                $tgt_hour, $tgt_min, $tgt_sec, $tgt_year, $tgt_mon,
+                                $tgt_mday ) );
+                    ( $tgt_hour, $tgt_mday, $tgt_mon, $tgt_year, $tgt_wday ) =
+                        ( localtime( parsedate( " + 1 hour", NOW => $t ) ) )
+                        [ 2, 3, 4, 5, 6 ];
+                    $tgt_mon++;
+                    $tgt_year += 1900;
+                    next;
+                }
+            }
+        } else {
+            if(    $tgt_hour != $now_hour
+                || $tgt_mday != $now_mday
+                || $tgt_year != $now_year ) {
+                $tgt_min = 0;
+            }
+        }
+        if( $xpn->[5][0] ne '*' ) {
+            if( $tgt_min != $now_min ) {
+                $tgt_sec = $xpn->[5][0];
+            } else {
+                unless( defined( $tgt_sec = nearest( $tgt_sec, $xpn->[5] ) ) ) {
+                    $tgt_sec = $xpn->[5][0];
+                    my $t = parsedate(
+                            sprintf(
+                                "%2.2d:%2.2d:%2.2d %4.4d/%2.2d/%2.2d",
+                                $tgt_hour, $tgt_min, $tgt_sec,
+                                $tgt_year, $tgt_mon, $tgt_mday ) );
+                    ( $tgt_min, $tgt_hour, $tgt_mday, $tgt_mon, $tgt_year, $tgt_wday ) =
+                        ( localtime( parsedate( " + 1 minute", NOW => $t ) ) )
+                        [ 1, 2, 3, 4, 5, 6 ];
+                    $tgt_mon++;
+                    $tgt_year += 1900;
+                    next;
+                }
+            }
+        } else {
+            $tgt_sec = ( $tgt_min == $now_min ? $tgt_sec : 0 );
+        }
+        my $date = sprintf(
+                "%2.2d:%2.2d:%2.2d %4.4d/%2.2d/%2.2d",
+                $tgt_hour, $tgt_min, $tgt_sec, $tgt_year, $tgt_mon, $tgt_mday );
+        my $result = parsedate( $date, VALIDATE => 1 );
+
+        return $result if( $result );
+
+        my $t = parsedate( $date );
+        ( $tgt_hour, $tgt_mday, $tgt_mon, $tgt_year, $tgt_wday ) =
+            ( localtime( parsedate( " + 1 second", NOW => $t ) ) )[ 2, 3, 4, 5, 6 ];
+        $tgt_mon++;
+        $tgt_year += 1900;
+        next;
+    }
+    return -1;
+}
+
+# get next entry in list or undef
+sub nearest {
+    my( $x, $list ) = @_;
+
+    for( my $i = 0; $i < @$list; ++$i ) {
+        if( $$list[$i] >= $x ) {
+            return $$list[$i];
+        }
+    }
     return;
 }
 
