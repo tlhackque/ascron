@@ -10,7 +10,7 @@ my $copyright =
 use warnings;
 use strict;
 
-our $VERSION = 'V1.0.7';
+our $VERSION = 'V1.0.8';
 
 use Cwd(   qw/realpath getcwd/ );
 use Errno( qw/EAGAIN/ );
@@ -1145,6 +1145,9 @@ the difficulties of editing a I<crontab> and waiting for I<crond> to notice it.
 I<ascron> can select jobs from any installed I<crontab> (user or system), from an uninstalled
 I<crontab>, or can run a job defined on the command line.
 
+The Vixie cron extensions are supported in I<crontabs>: named weekdays and months, ranges, step
+counts, and @abbreviations (such as @daily).
+
 I<ascron> sets up the environment using the same process as I<crond> does when reading I<crontab>s.
 
 I<ascron> obeys the same enviroment variables as I<crond> for determining the SHELL, PATH, and output
@@ -1200,6 +1203,8 @@ If B<--job> is not specified or B<--nojob>/B<--command>/B<-c> is specified, the 
 =item B<-l> B<--[no]list>
 
 With B<--job>, lists all matching jobs (and does not execute any).  Useful with multiple matches to determine a value of B<--match> that will select the desired job.
+
+B<--list> can also be used to determine the next time at which  I<crond> will execute matching jobs.
 
 =item B<-M> B<--mail-action>=I<discard>|I<display>|I<send>
 
