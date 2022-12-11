@@ -37,6 +37,9 @@ the difficulties of editing a _crontab_ and waiting for _crond_ to notice it.
 _ascron_ can select jobs from any installed _crontab_ (user or system), from an uninstalled
 _crontab_, or can run a job defined on the command line.
 
+The Vixie cron extensions are supported in _crontabs_: named weekdays and months, ranges, step
+counts, and @abbreviations (such as @daily).
+
 _ascron_ sets up the environment using the same process as _crond_ does when reading _crontab_s.
 
 _ascron_ obeys the same enviroment variables as _crond_ for determining the SHELL, PATH, and output
@@ -90,6 +93,8 @@ Options contained in `~/.ascron` will be applied before any specified on the com
 - **-l** **--\[no\]list**
 
     With **--job**, lists all matching jobs (and does not execute any).  Useful with multiple matches to determine a value of **--match** that will select the desired job.
+
+    **--list** can also be used to determine the next time at which  _crond_ will execute matching jobs.
 
 - **-M** **--mail-action**=_discard_|_display_|_send_
 

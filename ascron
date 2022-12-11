@@ -175,9 +175,6 @@ if( $version ) {
     exit 0;
 }
 
-$havetimedate =
-    eval { require Time::ParseDate; Time::ParseDate->import( qw/parsedate/ ); 1; };
-
 # Setup debug logging
 
 if( defined $debug ) {
@@ -202,6 +199,10 @@ if( defined $debug ) {
     debug( "Read %s\n", $ini ) if( defined $ini && length $ini );
     debug( "%s %s\n", $SELF, join( ' ', @argv ) );
 }
+
+$havetimedate =
+    eval { require Time::ParseDate; Time::ParseDate->import( qw/parsedate/ ); 1; };
+debug( "Time::ParseDate is not installed\n" ) unless( $havetimedate );
 
 # Try to find a reasonable value for TZ
 # It shouldn't be this hard...
@@ -464,11 +465,11 @@ foreach my $file ( defined $table
                 $line =~ s/^\s+//;
                 chomp $line;
                 printf( "%3u)%s:%u %s\n", $hitnum, $file, $., $line );
-                my $nextime = timeof( [ $min, $hr, $dom, $mon, $dow ] );
+                my( $nextime, $why ) = timeof( [ $min, $hr, $dom, $mon, $dow ] );
                 $nextime =
                     $nextime >= 0
                     ? strftime( "%a %d-%b-%Y %T", localtime( $nextime ) )
-                    : 'Unknown';
+                    : "Unknown ($why)";
                 printf( "     Next cron run: %s\n", $nextime );
                 debug( "%u)%s:%u %s", $hitnum, $file, $., $line );
                 debug( "    Next cron run: %s\n", $nextime );
@@ -853,7 +854,7 @@ HDR
 sub timeof {
     my( $timespec ) = @_;
 
-    return -1 unless( $havetimedate );
+    return ( -1, 'Time::ParseDate is not installed' ) unless( $havetimedate );
 
     my @xpn;
 
@@ -874,7 +875,7 @@ sub timeof {
                 if( $high !~ /^(\d+)/ ) {
                     $high = $namemap[$i]{ lc $high };
                 }
-                return -1
+                return ( -1, 'Syntax error: invalid range' )
                     unless(    defined( $low )
                             && defined( $high )
                             && $low <= $high
@@ -886,7 +887,7 @@ sub timeof {
             } else {
                 $f = $namemap[$i]{ lc $f } if( $f !~ /^(\d+|\*)$/ );
                 $f = $valmap[$i]{$f}       if( defined $f && exists( $valmap[$i]{$f} ) );
-                return -1
+                return ( -1, 'Syntax error: invalid name or value' )
                     unless( defined( $f )
                             && ( $f eq '*'
                                  || ( $f >= $limits[$i][0] && $f <= $limits[$i][1] ) ) );
@@ -903,14 +904,14 @@ sub timeof {
         my @x = @{ $xpn[4] };
         $xpn[4] = ['*'];
         my $t1 = xtime( $now, \@xpn );
-        return -1 if( $t1 < 0 );
+        return ( -1, 'Failed to resolve month constraint' ) if( $t1 < 0 );
         $xpn[4] = \@x;
         $xpn[2] = ['*'];
         my $t2 = xtime( $now, \@xpn );
-        return -1 if( $t2 < 0 );
+        return ( -1, 'Failed to resolve day constraint' ) if( $t2 < 0 );
         return ( $t1 < $t2 ) ? $t1 : $t2;
     }
-    return xtime( $now, \@xpn );
+    return ( xtime( $now, \@xpn ), 'Failed to resolve run time' );
 }
 
 # time from spec

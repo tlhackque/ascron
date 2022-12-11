@@ -129,7 +129,7 @@
 .\" ========================================================================
 .\"
 .IX Title "ASCRON 1"
-.TH ASCRON 1 "07-Dec-2022" "ascron V1.0.7" "Interactive cron simulator"
+.TH ASCRON 1 "11-Dec-2022" "ascron V1.0.8" "Interactive cron simulator"
 .\" For nroff, turn off justification.  Always turn off hyphenation; it makes
 .\" way too many mistakes in technical documents.
 .if n .ad l
@@ -152,6 +152,9 @@ the difficulties of editing a \fIcrontab\fR and waiting for \fIcrond\fR to notic
 .PP
 \&\fIascron\fR can select jobs from any installed \fIcrontab\fR (user or system), from an uninstalled
 \&\fIcrontab\fR, or can run a job defined on the command line.
+.PP
+The Vixie cron extensions are supported in \fIcrontabs\fR: named weekdays and months, ranges, step
+counts, and \f(CW@abbreviations\fR (such as \f(CW@daily\fR).
 .PP
 \&\fIascron\fR sets up the environment using the same process as \fIcrond\fR does when reading \fIcrontab\fRs.
 .PP
@@ -200,6 +203,8 @@ If \fB\-\-job\fR is not specified or \fB\-\-nojob\fR/\fB\-\-command\fR/\fB\-c\fR
 .IP "\fB\-l\fR \fB\-\-[no]list\fR" 4
 .IX Item "-l --[no]list"
 With \fB\-\-job\fR, lists all matching jobs (and does not execute any).  Useful with multiple matches to determine a value of \fB\-\-match\fR that will select the desired job.
+.Sp
+\&\fB\-\-list\fR can also be used to determine the next time at which  \fIcrond\fR will execute matching jobs.
 .IP "\fB\-M\fR \fB\-\-mail\-action\fR=\fIdiscard\fR|\fIdisplay\fR|\fIsend\fR" 4
 .IX Item "-M --mail-action=discard|display|send"
 Output on \fIstdout\fR or \fIstderr\fR from \fIcron\fR jobs is (usually) e\-mailed; the destination, source, subject, and format are controlled by environment variables set in the \fIcrontab\fR.
