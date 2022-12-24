@@ -10,7 +10,7 @@ my $copyright =
 use warnings;
 use strict;
 
-our $VERSION = 'V1.0.8';
+our $VERSION = 'V1.0.9';
 
 use Cwd(   qw/realpath getcwd/ );
 use Errno( qw/EAGAIN/ );
@@ -35,7 +35,7 @@ my @argv = @ARGV;
 # The following may be distribution-specific
 
 my( $usertable, @systables ) = ( '/var/spool/cron/%s', '/etc/crontab', '/etc/cron.d/*' );
-my $systableRE  = join( '|', map { s/[*]/.*/g; $_ } @systables );
+my $systableRE  = join( '|', map { my $d = $_; $d =~ s/[*]/.*/g; $d } @systables );
 my $usertableRE = sprintf( $usertable, '(.*)' );
 my $systable    = '*system*';
 my $mailer      = '/usr/lib/sendmail';
@@ -379,7 +379,6 @@ if( $debug ) {
 TABLE:
 foreach my $file ( defined $table
                    && $table ne $systable ? $table : glob join( ' ', @systables ) ) {
-
     debug( "Processing %s", $file );
     unless( -f $file ) {
         printf STDERR ( "%s: Not a regular file, skipping\n", $file );
