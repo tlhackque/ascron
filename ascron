@@ -10,7 +10,7 @@ my $copyright =
 use warnings;
 use strict;
 
-our $VERSION = 'V1.0.9';
+our $VERSION = 'V1.0.10';
 
 use Cwd(   qw/realpath getcwd/ );
 use Errno( qw/EAGAIN/ );
@@ -32,9 +32,14 @@ sub procsts;
 my $SELF = basename $0;
 my @argv = @ARGV;
 
-# The following may be distribution-specific
+# The following is distribution-specific
 
-my( $usertable, @systables ) = ( '/var/spool/cron/%s', '/etc/crontab', '/etc/cron.d/*' );
+my( $usertable, @systables ) = (
+       (  -d '/var/spool/cron/crontabs'
+          ? '/var/spool/cron/crontabs/%s'
+          : '/var/spool/cron/%s' ),
+       '/etc/crontab',
+       '/etc/cron.d/*' );
 my $systableRE  = join( '|', map { my $d = $_; $d =~ s/[*]/.*/g; $d } @systables );
 my $usertableRE = sprintf( $usertable, '(.*)' );
 my $systable    = '*system*';
@@ -178,6 +183,9 @@ if( $version ) {
 # Setup debug logging
 
 if( defined $debug ) {
+    if( $debug =~ /^-[[:alnum:]-]+$/ ) {
+        die( "--debug requires a filename, but its value ($debug) looks like an option\n" );
+    }
     $havegtod = eval {
         require Time::HiRes;
         Time::HiRes->import( qw/gettimeofday/ );
