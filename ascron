@@ -10,7 +10,7 @@ my $copyright =
 use warnings;
 use strict;
 
-our $VERSION = 'V1.0.11';
+our $VERSION = 'V1.0.12';
 
 use Cwd(   qw/realpath getcwd/ );
 use Errno( qw/EAGAIN/ );

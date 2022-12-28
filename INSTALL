@@ -2,8 +2,15 @@ To install ascron:
 
 Make sure Perl is installed.
 
+The latest release will be posted at https://github.com/tlhackque/ascron
+
+Obtain a release tarball and verify its signature, e.g.:
+  wget https://github.com/tlhackque/ascron/releases/download/V1.0.11/ascron-1.0.11.tar.gz
+  wget https://github.com/tlhackque/ascron/releases/download/V1.0.11/ascron-1.0.11.tar.gz.sig
+  gpg --verify ascron-1.0.11.tar.gz.sig
+
 unpack tarball, e.g.:
-  tar -xzf ascron-1.000.tgz
+  tar -xzf ascron-1.0.11.tar.gz
 cd to the directory
 
 The Perl module Time::ParseDate is not required, but is highly recommended.
