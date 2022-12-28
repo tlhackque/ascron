@@ -15,6 +15,8 @@ Some of the differences include:
 
 `ascron` lets you run a `cron` job **on your terminal** directly from an installed `crontab`, in exactly the same environment as when `cron` runs it.  It enables you to run from an uninstalled `crontab`, so you can have confidence that it will work the first time.  It also enables you to run an arbitrary command _as if_ it was installed in a specific `crontab` for faster turn-around.  All in all, when you finally install your job, there should be no surprises.
 
+`ascron` also assists in finding `cron` jobs and determining the time at which they'll next run.
+
 Brief help (--man for detail):
 
 # NAME
@@ -26,7 +28,7 @@ ascron - Run cron jobs from a terminal
     ascron   command | job-regexp
               --format  --job     --list    --mail-action --locale --match
               --system  --table   --user    --debug=file  --tz      --notz
-              --detach  --pidfile
+              --detach  --pidfile --find
               --help    --man     --version
 
 # DESCRIPTION
@@ -55,7 +57,7 @@ See **EXAMPLES** for how these interact.
 
 # OPTIONS
 
-The following options are used to select the _crontab_(s) searched, and the job to be run.
+The following options are used to select the _crontab_(s) searched, and the function performed or job to be run.
 
 **system** _crontabs_ include the user under which a job runs.  These include `/etc/crontab` and `/etc/cron.d/*`.
 **user** _crontabs_ do not include the user.  The user is implied by the Icrontab>'s location or by the **--format** option.  The user may also be specified by the **--user** option, which also implies a default table.
@@ -92,9 +94,13 @@ Options contained in `~/.ascron` will be applied before any specified on the com
 
 - **-l** **--\[no\]list**
 
-    With **--job**, lists all matching jobs (and does not execute any).  Useful with multiple matches to determine a value of **--match** that will select the desired job.
+    With **--job**, lists all matching jobs in the specified table(s) (and does not execute any).  Useful with multiple matches to determine a value of **--match** that will select the desired job.
 
     **--list** can also be used to determine the next time at which  _crond_ will execute matching jobs.
+
+- **-F** **--\[no\]find**
+
+    Searches all installed tables (system and user) for matching jobs (and does not execute any).  If **--user** is not specified, searches all users' tables.  **--find** does not match **--table** or **--format**.  Useful when you know a job is running under _cron_, but don't know where to find it.
 
 - **-M** **--mail-action**=_discard_|_display_|_send_
 

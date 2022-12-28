@@ -10,7 +10,7 @@ my $copyright =
 use warnings;
 use strict;
 
-our $VERSION = 'V1.0.10';
+our $VERSION = 'V1.0.11';
 
 use Cwd(   qw/realpath getcwd/ );
 use Errno( qw/EAGAIN/ );
@@ -22,6 +22,7 @@ use POSIX(        qw/:sys_wait_h setlocale LC_ALL LC_COLLATE setsid strftime/ );
 use Sys::Hostname;
 use Text::Abbrev;
 
+sub processtable;
 sub dojob;
 sub timeof;
 sub xtime;
@@ -85,9 +86,17 @@ my @valmap = ( {},
                { 7 => 0 },
                {},
              );
+my %tsabbrevs = ( reboot   => "99 99 99 99 99",
+                  yearly   => "0 0 1 Jan *",
+                  annually => "0 0 1 Jan *",
+                  monthly  => "0 0 1 *   *",
+                  weekly   => "0 0 * *   Sun",
+                  daily    => "0 0 * *   *",
+                  hourly   => "0 * * *   *",
+                );
 
 # Parse (and default) the command line
-my( $debug, $detach, $job,  $match,   $help,
+my( $debug, $detach, $job,  $match,   $help, $find,
     $list,  $locale, $man,  $pidfile, $sendmail,
     $table, $format, $notz, $user,    $version );
 
@@ -139,6 +148,7 @@ GetOptions(
         'daemon|detach|D!' => \$detach,
         'job|j'            => \$job,
         'nojob|command|c'  => sub { undef $job; },
+        'find|F!'          => \$find,
         'list|l!'          => \$list,
         'locale|L=s'       => \$locale,
         'nolocale'         => sub { undef $locale; },
@@ -184,7 +194,8 @@ if( $version ) {
 
 if( defined $debug ) {
     if( $debug =~ /^-[[:alnum:]-]+$/ ) {
-        die( "--debug requires a filename, but its value ($debug) looks like an option\n" );
+        die( "--debug requires a filename, but its value ($debug) looks like an option\n"
+        );
     }
     $havegtod = eval {
         require Time::HiRes;
@@ -306,7 +317,7 @@ if( defined $table && ( $table eq $systable || $table =~ /$systableRE/ ) ) {
     $format = 'system';
 } elsif( defined $table && !defined $format && $table =~ /$usertableRE/ ) {
     $format = 'user';
-    $user   = basename( $table ) unless( defined $user );
+    $user   = basename( $table ) unless( defined( $user ) || $find );
 } elsif( !defined $table && !defined $format ) {
     if( defined $user ) {
         $table  = sprintf( $usertable, $user );
@@ -335,6 +346,7 @@ if( defined $table && ( $table eq $systable || $table =~ /$systableRE/ ) ) {
 }
 
 if(    $format eq 'user'
+    && !$find
     && defined $user
     && defined $table
     && $table =~ /$usertableRE/
@@ -347,14 +359,16 @@ if(    $format eq 'user'
 
 # Job matching and environment
 my( $matchRE, $jobcmd, $hitnum, %env );
-$hitnum = 0;
-%env    = %emptyenv;
+%env = %emptyenv;
 
 $match = 1 unless( defined $match );
+$job   = $list = 1 if( $find );
 
 if( defined $job ) {  # Job from a crontab
     unless( @ARGV ) {
-        printf STDERR ( "--job requires one or more job strings to match\n" );
+        printf STDERR (
+                "--%s requires one or more job strings to match\n",
+                $find ? 'find' : 'job' );
         exit 1;
     }
     $matchRE = join( '|', map { "(?:$_)" } @ARGV );  # ?? map { "(?:\Q$_\E)" } @ARGV;
@@ -384,20 +398,77 @@ if( $debug ) {
 }
 
 # Process table(s) for environment and (if requested) jobs
-TABLE:
-foreach my $file ( defined $table
-                   && $table ne $systable ? $table : glob join( ' ', @systables ) ) {
+if( $find ) {
+    foreach my $file ( glob join( ' ', @systables ) ) {
+        processtable( $file, 'system' );
+    }
+    $hitnum = 0 if( defined $hitnum );
+    foreach my $file ( defined $user
+                       ? sprintf( $usertable, $user )
+                       : glob sprintf( $usertable, '*' )
+        ) {
+        processtable( $file, 'user' );
+    }
+} else {
+    foreach my $file ( defined $table
+                       && $table ne $systable ? $table : glob join( ' ', @systables ) ) {
+        last if( processtable( $file, $format ) );
+    }
+}
+
+my $sts = 0;
+if( defined $job ) {
+    unless( defined $hitnum ) {
+        my $where =
+              $find          ? 'any table'
+            : defined $table ? $table
+            :                  join( ' ', glob join( ' ', @systables ) );
+        printf STDERR ( "No match for %s in %s\n", $matchRE, $where );
+        debug( "No match for %s was found in %s", $matchRE, $where );
+        $sts = 1;
+    }
+} else {
+
+    # Execute from command line
+    dojob( $jobcmd, defined $user ? $user : $defaultUser, \%env );
+}
+
+if( $debug ) {
+    my( $endt, $endu ) = $havegtod ? gettimeofday() : ( time, 0 );
+    if( $endu < $startu ) {
+        $endt--;
+        $endu += 1_000_000;
+    }
+    $endu -= $startu;
+    $endt -= $startt;
+    if( $endt < 86400 ) {
+        debug(  "Elapsed time: %s\n",
+                strftime( '%T', gmtime $endt ) .
+                ( $havegtod ? sprintf( '.%06u', $endu ) : '' ) );
+    } else {
+        debug(  "Elapsed time: %ud %s\n",
+                $endt / 86400,
+                strftime( '%T', gmtime( $endt % 86400 ) ) .
+                ( $havegtod ? sprintf( '.%06u', $endu ) : '' ) );
+    }
+}
+exit $sts;
+
+sub processtable {
+    my( $file, $format ) = @_;
+
+    $file = realpath( $file );
     debug( "Processing %s", $file );
     unless( -f $file ) {
         printf STDERR ( "%s: Not a regular file, skipping\n", $file );
-        next TABLE;
+        return;
     }
     %env = %emptyenv;
 
     open( my $tbl, '<', $file ) or do {
         printf STDERR ( "Can't read %s - %s\n", $file, $! );
         debug( "%s: %s", $file, $! );
-        next TABLE;
+        return;
     };
 
     if( $file =~ /(?:$systableRE)|(?:$usertableRE)/ ) {
@@ -428,14 +499,7 @@ foreach my $file ( defined $table
 
         # Timespec abbreviations
         if( s/^\s*\@(\S+)\s+// ) {
-            my $xpn = { reboot   => "99 99 99 99 99",
-                        yearly   => "0 0 1 Jan *",
-                        annually => "0 0 1 Jan *",
-                        monthly  => "0 0 1 *   *",
-                        weekly   => "0 0 * *   Sun",
-                        daily    => "0 0 * *   *",
-                        hourly   => "0 * * *   *",
-                      }->{$1};
+            my $xpn = $tsabbrevs{$1};
             $xpn = "88 88 88 88 88" unless( defined $xpn );
             $_   = "${xpn} $_";
         }
@@ -488,47 +552,15 @@ foreach my $file ( defined $table
                             : defined $user ? $user
                             : $defaultUser,
                             \%env );
-                    last TABLE;
+                    close( $tbl );
+                    return 1;
                 }
             }
         }
     }  # End of this crontab
     close( $tbl );
-}  # End of crontabs
-
-my $sts = 0;
-if( defined $job ) {
-    unless( $hitnum ) {
-        my $where = defined $table ? $table : join( ' ', glob join( ' ', @systables ) );
-        printf STDERR ( "No match for %s in %s\n", $matchRE, $where );
-        debug( "No match for %s in %s", $matchRE, $where );
-        $sts = 1;
-    }
-} else {
-
-    # Execute from command line
-    dojob( $jobcmd, defined $user ? $user : $defaultUser, \%env );
-}
-if( $debug ) {
-    my( $endt, $endu ) = $havegtod ? gettimeofday() : ( time, 0 );
-    if( $endu < $startu ) {
-        $endt--;
-        $endu += 1_000_000;
-    }
-    $endu -= $startu;
-    $endt -= $startt;
-    if( $endt < 86400 ) {
-        debug(  "Elapsed time: %s\n",
-                strftime( '%T', gmtime $endt ) .
-                ( $havegtod ? sprintf( '.%06u', $endu ) : '' ) );
-    } else {
-        debug(  "Elapsed time: %ud %s\n",
-                $endt / 86400,
-                strftime( '%T', gmtime( $endt % 86400 ) ) .
-                ( $havegtod ? sprintf( '.%06u', $endu ) : '' ) );
-    }
-}
-exit $sts;
+    return;
+}  # End of processtable
 
 # Execute identified job
 sub dojob {
@@ -546,6 +578,7 @@ sub dojob {
 
     while( @cmd ) {
         my $c = shift @cmd;
+        $$p = '' unless( defined $$p );
         if( $c eq '\\' && @cmd ) {
             $c = shift @cmd;
             if( $c eq '\\' || $c eq '%' ) {
@@ -1142,7 +1175,7 @@ ascron - Run cron jobs from a terminal
  ascron   command | job-regexp
            --format  --job     --list    --mail-action --locale --match
            --system  --table   --user    --debug=file  --tz      --notz
-           --detach  --pidfile
+           --detach  --pidfile --find
            --help    --man     --version
 
 =head1 DESCRIPTION
@@ -1171,7 +1204,7 @@ See B<EXAMPLES> for how these interact.
 
 =head1 OPTIONS
 
-The following options are used to select the I<crontab>(s) searched, and the job to be run.
+The following options are used to select the I<crontab>(s) searched, and the function performed or job to be run.
 
 B<system> I<crontabs> include the user under which a job runs.  These include F</etc/crontab> and F</etc/cron.d/*>.
 B<user> I<crontabs> do not include the user.  The user is implied by the Icrontab>'s location or by the B<--format> option.  The user may also be specified by the B<--user> option, which also implies a default table.
@@ -1210,9 +1243,13 @@ If B<--job> is not specified or B<--nojob>/B<--command>/B<-c> is specified, the 
 
 =item B<-l> B<--[no]list>
 
-With B<--job>, lists all matching jobs (and does not execute any).  Useful with multiple matches to determine a value of B<--match> that will select the desired job.
+With B<--job>, lists all matching jobs in the specified table(s) (and does not execute any).  Useful with multiple matches to determine a value of B<--match> that will select the desired job.
 
 B<--list> can also be used to determine the next time at which  I<crond> will execute matching jobs.
+
+=item B<-F> B<--[no]find>
+
+Searches all installed tables (system and user) for matching jobs (and does not execute any).  If B<--user> is not specified, searches all users' tables.  B<--find> does not match B<--table> or B<--format>.  Useful when you know a job is running under I<cron>, but don't know where to find it.
 
 =item B<-M> B<--mail-action>=I<discard>|I<display>|I<send>
 
@@ -1297,6 +1334,31 @@ I<crond> identifies its jobs to MLS-equipped systems (e.g. SELINUX, APPARMOR) so
 
 I<ascron> does not support this.  You may see different behaviors as a result.
 
+=head2 Locating jobs: B<--find> vs. B<--list>
+
+B<--find> and B<--list> perform similar functions.  B<--find> is used when you are unsure where
+a job is installed; B<--list> is used when you know wheter a job is in a system or a specific user's table.
+
+If more than one match expression is specified, both B<--find> and B<--list> will display jobs that
+match any of the expressions.
+
+B<--find> performs a wider search for a job than B<--list>, possibly inspecting all users' tables.
+B<--find> can not inspect uninstalled tables.
+
+B<--list> inspects the specified user, table, or all system tables.
+
+B<--list> queries the specified tables and assists you in determining what the same command without B<--list>
+could execute.  In the case of multiple matches, the results are numbered so that you can execute the
+desired job by replacing B<--list> with B<--match>=I<sequence_number>.
+
+B<--find>'s wider search can easily find I<root> jobs, which may be installed either in the system
+tables or in I<root>'s user table.  It can also locate jobs when you are unsure whether a periodic
+jub runs under I<root>, the application's or the user's account.
+
+In both cases: you can limit its search to a specific user with B<--user>. All
+matching jobs are displayed but not executed.  To execute a job, you must
+specify the table, format and/or user (or accept the defaults described above).
+
 =head1 F<stdin> for I<cron> jobs
 
 If a I<crontab> command contains an unquoted '%', everything after the first unquoted '%' is sent to the job's F<stdin>.
@@ -1370,13 +1432,39 @@ variables (but not environment variables):
 
 =head2 List all jobs matching I<Backup> or I<update> in I<root>'s private table
 
-Note that the mstch number (for B<--match>) precedes each line, and that the line number in the I<crontab> follows the filename.
+Note that the match number (for B<--match>) precedes each line, and that the line number in the I<crontab> follows the filename.
 
     ascron --list --job Backup update -u root
-    1)/var/spool/cron/root:11 17 5 * * *   cd /Network ; CA/updateaccess >www/AccessOfDay.html 2>/dev/null
-    2)/var/spool/cron/root:23 12 2 * * *   nice -n19 /root/tools/Backup
-    3)/var/spool/cron/root:30 43 3 * * 4   /root/tools/update-leap -p 4
-    4)/var/spool/cron/root:32 37 2 * * Wed /etc/init.d/BlockCountries start -update
+    1)/var/spool/cron/root:11 17 5 * * * cd /Network ; CA/updateaccess >WWW/AccessOfDay.html 2>/dev/null
+       Next cron run: Thu 29-Dec-2022 05:17:00
+    2)/var/spool/cron/root:23 12 2 * * * nice -n19 /root/tools/Backup
+       Next cron run: Thu 29-Dec-2022 02:12:00
+    3)/var/spool/cron/root:30 43 3 * * 4 /root/tools/update-leap -p 4
+       Next cron run: Thu 29-Dec-2022 03:43:00
+    4)/var/spool/cron/root:36 37 2 * * Wed /etc/init.d/BlockCountries start -update
+       Next cron run: Wed 04-Jan-2023 02:37:00
+
+=head2 Find all jobs matching I<mail>
+
+Note that matches are found in both the system tables and in I<root>'s user table.
+
+    ascron --find mail
+    1)/etc/cron.d/mailman:28 0 8 * * * mailman /usr/lib/mailman/cron/checkdbs
+       Next cron run: Wed 28-Dec-2022 08:00:00
+    2)/etc/cron.d/mailman:32 0 9 * * * mailman /usr/lib/mailman/cron/disabled
+       Next cron run: Wed 28-Dec-2022 09:00:00
+    3)/etc/cron.d/mailman:35 0 12 * * * mailman /usr/lib/mailman/cron/senddigests
+       Next cron run: Wed 28-Dec-2022 12:00:00
+    4)/etc/cron.d/mailman:38 0 5 1 * * mailman /usr/lib/mailman/cron/mailpasswds
+       Next cron run: Sun 01-Jan-2023 05:00:00
+    5)/etc/cron.d/mailman:43 0,5,10,15,20,25,30,35,40,45,50,55 * * * * mailman /usr/lib/mailman/cron/gate_news
+       Next cron run: Wed 28-Dec-2022 06:05:00
+    6)/etc/cron.d/mailman:48 27 3 * * * mailman /usr/lib/mailman/cron/nightly_gzip
+       Next cron run: Thu 29-Dec-2022 03:27:00
+    1)/var/spool/cron/root:53 42 23 * * * /etc/mail/spamassassin/update_rules
+       Next cron run: Wed 28-Dec-2022 23:42:00
+    2)/var/spool/cron/root:62 11 1 * * * /root/tools/purgemail
+       Next cron run: Thu 29-Dec-2022 01:11:00
 
 =head2 Locate and run F<crontest> in an uninstalled I<crontab>
 

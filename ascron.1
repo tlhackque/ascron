@@ -129,7 +129,7 @@
 .\" ========================================================================
 .\"
 .IX Title "ASCRON 1"
-.TH ASCRON 1 "24-Dec-2022" "ascron V1.0.9" "Interactive cron simulator"
+.TH ASCRON 1 "28-Dec-2022" "ascron V1.0.11" "Interactive cron simulator"
 .\" For nroff, turn off justification.  Always turn off hyphenation; it makes
 .\" way too many mistakes in technical documents.
 .if n .ad l
@@ -142,7 +142,7 @@ ascron \- Run cron jobs from a terminal
 \& ascron   command | job\-regexp
 \&           \-\-format  \-\-job     \-\-list    \-\-mail\-action \-\-locale \-\-match
 \&           \-\-system  \-\-table   \-\-user    \-\-debug=file  \-\-tz      \-\-notz
-\&           \-\-detach  \-\-pidfile
+\&           \-\-detach  \-\-pidfile \-\-find
 \&           \-\-help    \-\-man     \-\-version
 .Ve
 .SH "DESCRIPTION"
@@ -170,7 +170,7 @@ When running jobs, \fIascron\fR will (if run as root) run them as the appropriat
 See \fB\s-1EXAMPLES\s0\fR for how these interact.
 .SH "OPTIONS"
 .IX Header "OPTIONS"
-The following options are used to select the \fIcrontab\fR(s) searched, and the job to be run.
+The following options are used to select the \fIcrontab\fR(s) searched, and the function performed or job to be run.
 .PP
 \&\fBsystem\fR \fIcrontabs\fR include the user under which a job runs.  These include \fI/etc/crontab\fR and \fI/etc/cron.d/*\fR.
 \&\fBuser\fR \fIcrontabs\fR do not include the user.  The user is implied by the Icrontab>'s location or by the \fB\-\-format\fR option.  The user may also be specified by the \fB\-\-user\fR option, which also implies a default table.
@@ -202,9 +202,12 @@ Specifies the job(s) to be located in the \fIcrontab\fR(s).  The command argumen
 If \fB\-\-job\fR is not specified or \fB\-\-nojob\fR/\fB\-\-command\fR/\fB\-c\fR is specified, the command is specified by the command line arguments.
 .IP "\fB\-l\fR \fB\-\-[no]list\fR" 4
 .IX Item "-l --[no]list"
-With \fB\-\-job\fR, lists all matching jobs (and does not execute any).  Useful with multiple matches to determine a value of \fB\-\-match\fR that will select the desired job.
+With \fB\-\-job\fR, lists all matching jobs in the specified table(s) (and does not execute any).  Useful with multiple matches to determine a value of \fB\-\-match\fR that will select the desired job.
 .Sp
 \&\fB\-\-list\fR can also be used to determine the next time at which  \fIcrond\fR will execute matching jobs.
+.IP "\fB\-F\fR \fB\-\-[no]find\fR" 4
+.IX Item "-F --[no]find"
+Searches all installed tables (system and user) for matching jobs (and does not execute any).  If \fB\-\-user\fR is not specified, searches all users' tables.  \fB\-\-find\fR does not match \fB\-\-table\fR or \fB\-\-format\fR.  Useful when you know a job is running under \fIcron\fR, but don't know where to find it.
 .IP "\fB\-M\fR \fB\-\-mail\-action\fR=\fIdiscard\fR|\fIdisplay\fR|\fIsend\fR" 4
 .IX Item "-M --mail-action=discard|display|send"
 Output on \fIstdout\fR or \fIstderr\fR from \fIcron\fR jobs is (usually) e\-mailed; the destination, source, subject, and format are controlled by environment variables set in the \fIcrontab\fR.
@@ -272,6 +275,30 @@ If \f(CW\*(C`LC_*\*(C'\fR environment variables are set in tables, they apply to
 \&\fIcrond\fR identifies its jobs to MLS-equipped systems (e.g. \s-1SELINUX, APPARMOR\s0) so that they get the correct security contexts assigned.
 .PP
 \&\fIascron\fR does not support this.  You may see different behaviors as a result.
+.SS "Locating jobs: \fB\-\-find\fP vs. \fB\-\-list\fP"
+.IX Subsection "Locating jobs: --find vs. --list"
+\&\fB\-\-find\fR and \fB\-\-list\fR perform similar functions.  \fB\-\-find\fR is used when you are unsure where
+a job is installed; \fB\-\-list\fR is used when you know wheter a job is in a system or a specific user's table.
+.PP
+If more than one match expression is specified, both \fB\-\-find\fR and \fB\-\-list\fR will display jobs that
+match any of the expressions.
+.PP
+\&\fB\-\-find\fR performs a wider search for a job than \fB\-\-list\fR, possibly inspecting all users' tables.
+\&\fB\-\-find\fR can not inspect uninstalled tables.
+.PP
+\&\fB\-\-list\fR inspects the specified user, table, or all system tables.
+.PP
+\&\fB\-\-list\fR queries the specified tables and assists you in determining what the same command without \fB\-\-list\fR
+could execute.  In the case of multiple matches, the results are numbered so that you can execute the
+desired job by replacing \fB\-\-list\fR with \fB\-\-match\fR=\fIsequence_number\fR.
+.PP
+\&\fB\-\-find\fR's wider search can easily find \fIroot\fR jobs, which may be installed either in the system
+tables or in \fIroot\fR's user table.  It can also locate jobs when you are unsure whether a periodic
+jub runs under \fIroot\fR, the application's or the user's account.
+.PP
+In both cases: you can limit its search to a specific user with \fB\-\-user\fR. All
+matching jobs are displayed but not executed.  To execute a job, you must
+specify the table, format and/or user (or accept the defaults described above).
 .SH "\fIstdin\fP for \fIcron\fP jobs"
 .IX Header "stdin for cron jobs"
 If a \fIcrontab\fR command contains an unquoted '%', everything after the first unquoted '%' is sent to the job's \fIstdin\fR.
@@ -345,14 +372,41 @@ variables (but not environment variables):
 .Ve
 .SS "List all jobs matching \fIBackup\fP or \fIupdate\fP in \fIroot\fP's private table"
 .IX Subsection "List all jobs matching Backup or update in root's private table"
-Note that the mstch number (for \fB\-\-match\fR) precedes each line, and that the line number in the \fIcrontab\fR follows the filename.
+Note that the match number (for \fB\-\-match\fR) precedes each line, and that the line number in the \fIcrontab\fR follows the filename.
 .PP
-.Vb 5
+.Vb 9
 \&    ascron \-\-list \-\-job Backup update \-u root
-\&    1)/var/spool/cron/root:11 17 5 * * *   cd /Network ; CA/updateaccess >www/AccessOfDay.html 2>/dev/null
-\&    2)/var/spool/cron/root:23 12 2 * * *   nice \-n19 /root/tools/Backup
-\&    3)/var/spool/cron/root:30 43 3 * * 4   /root/tools/update\-leap \-p 4
-\&    4)/var/spool/cron/root:32 37 2 * * Wed /etc/init.d/BlockCountries start \-update
+\&    1)/var/spool/cron/root:11 17 5 * * * cd /Network ; CA/updateaccess >WWW/AccessOfDay.html 2>/dev/null
+\&       Next cron run: Thu 29\-Dec\-2022 05:17:00
+\&    2)/var/spool/cron/root:23 12 2 * * * nice \-n19 /root/tools/Backup
+\&       Next cron run: Thu 29\-Dec\-2022 02:12:00
+\&    3)/var/spool/cron/root:30 43 3 * * 4 /root/tools/update\-leap \-p 4
+\&       Next cron run: Thu 29\-Dec\-2022 03:43:00
+\&    4)/var/spool/cron/root:36 37 2 * * Wed /etc/init.d/BlockCountries start \-update
+\&       Next cron run: Wed 04\-Jan\-2023 02:37:00
+.Ve
+.SS "Find all jobs matching \fImail\fP"
+.IX Subsection "Find all jobs matching mail"
+Note that matches are found in both the system tables and in \fIroot\fR's user table.
+.PP
+.Vb 10
+\&    ascron \-\-find mail
+\&    1)/etc/cron.d/mailman:28 0 8 * * * mailman /usr/lib/mailman/cron/checkdbs
+\&       Next cron run: Wed 28\-Dec\-2022 08:00:00
+\&    2)/etc/cron.d/mailman:32 0 9 * * * mailman /usr/lib/mailman/cron/disabled
+\&       Next cron run: Wed 28\-Dec\-2022 09:00:00
+\&    3)/etc/cron.d/mailman:35 0 12 * * * mailman /usr/lib/mailman/cron/senddigests
+\&       Next cron run: Wed 28\-Dec\-2022 12:00:00
+\&    4)/etc/cron.d/mailman:38 0 5 1 * * mailman /usr/lib/mailman/cron/mailpasswds
+\&       Next cron run: Sun 01\-Jan\-2023 05:00:00
+\&    5)/etc/cron.d/mailman:43 0,5,10,15,20,25,30,35,40,45,50,55 * * * * mailman /usr/lib/mailman/cron/gate_news
+\&       Next cron run: Wed 28\-Dec\-2022 06:05:00
+\&    6)/etc/cron.d/mailman:48 27 3 * * * mailman /usr/lib/mailman/cron/nightly_gzip
+\&       Next cron run: Thu 29\-Dec\-2022 03:27:00
+\&    1)/var/spool/cron/root:53 42 23 * * * /etc/mail/spamassassin/update_rules
+\&       Next cron run: Wed 28\-Dec\-2022 23:42:00
+\&    2)/var/spool/cron/root:62 11 1 * * * /root/tools/purgemail
+\&       Next cron run: Thu 29\-Dec\-2022 01:11:00
 .Ve
 .SS "Locate and run \fIcrontest\fP in an uninstalled \fIcrontab\fP"
 .IX Subsection "Locate and run crontest in an uninstalled crontab"
