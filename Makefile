@@ -1,60 +1,66 @@
+# Copyright (C) 2022, 2023 Timothe Litt litt at acm ddot org
+
+# $Id: c8dcdbc31869b1385dfd11f0386043f7f6705c3b $
+
 # Install targets - can override on command line
 
-prefix = /usr/local
-datarootdir = $(prefix)/share
-mandir = $(datarootdir)/man
-man1dir = $(mandir)/man1
-manext = .1
-man1ext = .1
-exec_prefix = $(prefix)
-bindir = $(exec_prefix)/bin
+# Note that DESTDIR is supported for staging environments
 
-INSTALL = install
-INSTALL_PROGRAM = $(INSTALL)
-INSTALL_DATA = $(INSTALL) -m 644
+prefix          := /usr/local
+datarootdir     := $(prefix)/share
+mandir          := $(datarootdir)/man
+man1dir         := $(mandir)/man1
+manext          := .1
+man1ext         := .1
+exec_prefix     := $(prefix)
+bindir          := $(exec_prefix)/bin
+
+INSTALL         := install
+INSTALL_PROGRAM := $(INSTALL)
+INSTALL_DATA    := $(INSTALL) -m 644
 
 # Specify key="deadbeef" or key="deadbeef beeffeed" on command line (else default)
-GPG = gpg
+GPG          := gpg
 
-PERL = perl
-PERLTIDY = perltidy
-POD2MAN = pod2man
-POD2MARKDOWN = pod2markdown
+PERL         := perl
+PERLTIDY     := perltidy
+POD2MAN      := pod2man
+POD2MARKDOWN := pod2markdown
 
-SHELL := bash
+SHELL        := bash
 
 # Usage:
 #  See INSTALL
 
 # Extract version from ascron source
 
-kitversion != $(PERL) ascron -vv
-kitname = ascron-$(kitversion)
-kitowner = 0:0
+kitversion := $(shell $(PERL) ascron -vv)
+kitname    := ascron-$(kitversion)
+kitowner   := 0:0
 
 # If in a Git working directory and the git command is available,
 # get the last tag in case making a distribution.
 
 ifneq "$(strip $(shell [ -d '.git' ] && echo 'true' ))" ""
-  gitcmd != command -v git
+  gitcmd   := $(shell command -v git)
   ifneq "$(strip $(gitcmd))" ""
-    gittag != git tag | tail -n1
+    gittag := $(shell git tag --sort=version:refname | tail -n1)
   endif
 endif
 
 # file types from which tar can infer compression, if tool is installed
 
-# kittypes = gz xz lzop lz lzma Z zst bz bz2
+# kittypes := gz xz lzop lz lzma Z zst bz bz2
 
 # kittypes to build
 
-kittypes = gz xz
+kittypes := gz xz
 
 # Files to package
 
-kitfiles = INSTALL README.md LICENSE ascron ascron$(man1ext) Makefile
+kitfiles := INSTALL README.md LICENSE ascron ascron$(man1ext) Makefile
 
-.PHONY : all README.md
+.PHONY : all
 
 all : ascron$(man1ext) README.md
 
@@ -64,24 +70,17 @@ ascron$(man1ext) : ascron Makefile
 	$(POD2MAN) --center "Interactive cron simulator"  --date "$$(date -r ascron '+%d-%b-%Y')"\
 		--release "ascron V$(kitversion)" $< $@
 
-# Replace help section of README.md with the appropriate sections of POD from ascron
-# Extract the sections as POD, convert to markdown, copy README.md up to the help,
-# and append the new markdown.
+# Die if no pod2markdown.
+# Append the appropriate sections of POD from ascron to READNE,md.in
+# Extract the sections as POD, convert to markdown, append
 
-README.md : ascron
+README.md : ascron README.md.in Makefile
 	@$(POD2MARKDOWN)  </dev/null >/dev/null
-	$(PERL)  -Mwarnings -Mstrict <$< \
-	-e'my $$hlp = ""; while( <> ) {' \
+	$(PERL)  -Mwarnings -Mstrict <$<                   \
+	-e'print "=pod\n\n"; while( <> ) {'                \
 	-e'my $$t = /^=head1 NAME/../^=head1 Subtleties/;' \
-	-e'$$hlp .= $$_ if( $$t && $$t !~ /E0$$/ ); }' \
-	-e'printf( "=pod\n\n%s\n=cut\n", $$hlp );'| \
-	$(POD2MARKDOWN) | \
-	$(PERL) -Mwarnings -Mstrict \
-	-e'open( my $$rm, "<", "$@" ) or die "$@: $$!\n";' \
-	-e'while( <$$rm> ) { last if( /^# NAME/ );' \
-	-e'print; }' \
-	-e'print while( <> );' >$@.tmp
-	mv $@.tmp $@
+	-e'print if( $$t && $$t !~ /E0$$/ ); }'            \
+	-e'print( "\n=cut\n" );'| $(POD2MARKDOWN) | cat $@.in - >$@
 
 # Make tarball kits - various compressions
 
@@ -89,7 +88,11 @@ README.md : ascron
 
 dist : signed-dist
 
-signed-dist : unsigned-dist $(foreach type,$(kittypes),$(kitname).tar.$(type).sig)
+ifeq ($(strip $(gitcmd)),)
+signed-dist : $(foreach type,$(kittypes),$(kitname).tar.$(type).sig)
+else
+signed-dist : $(foreach type,$(kittypes),$(kitname).tar.$(type).sig) .tagged
+endif
 
 unsigned-dist : $(foreach type,$(kittypes),$(kitname).tar.$(type))
 
@@ -123,8 +126,8 @@ install : ascron ascron$(man1ext) installdirs
 .PHONY : uninstall
 
 uninstall :
-	-rm $(DESTDIR)$(bindir)/ascron
-	-rm $(DESTDIR)$(man1dir)/ascron$(man1ext)
+	-rm -f "$(DESTDIR)$(bindir)/ascron"
+	-rm -f "$(DESTDIR)$(man1dir)/ascron$(man1ext)"
 
 # create install directory tree (especially when staging)
 
@@ -138,22 +141,32 @@ define make_tar =
 %.tar.$(1) : $$(foreach f,$$(kitfiles), %/$$(f))
 	tar -caf $$@ $$^
 	@-chown $(kitowner) $$@
-ifneq ($(strip $(gitcmd)),)
-	@if [ -n "$$$$(git diff --stat)" ]; then \
-	    echo " *** Not tagging V$(kitversion) because working directory is dirty"; echo ""; \
-	    else true; \
-	fi
-  ifeq ($(strip $(gittag)),V$(kitversion))
-	@echo " *** Not tagging because V$(kitversion) already exists"
-	@echo ""
-  else
-	-git tag -f V$(kitversion)
-  endif
-endif
 
 endef
 
 $(foreach type,$(kittypes),$(eval $(call make_tar,$(type))))
+
+# Ensure that the release is tagged, providing the working directory is clean
+# Depends on everything in git (not just kitfiles), everything compiled, and
+# all the release kits.
+
+ifneq ($(strip $(gitcmd)),)
+.PHONY : tag
+
+tag : .tagged
+
+.tagged : $(shell git ls-tree --full-tree --name-only -r HEAD) unsigned-dist
+	@if git ls-files --others --exclude-standard --directory --no-empty-directory --error-unmatch -- ':/*' >/dev/null 2>/dev/null || \
+	    [ -n "$$(git diff --name-only)$$(git diff --name-only --staged)" ]; then \
+	    echo " *** Not tagging V$(kitversion) because working directory is dirty"; echo ""; false ;\
+	 elif [ "$(strip $(gittag))" == "V$(kitversion)" ]; then                 \
+	    echo " *** Not tagging because V$(kitversion) already exists";       \
+	    echo ""; false;                                                      \
+	 else                                                                    \
+	    git tag V$(kitversion) && echo "Tagged as V$(kitversion)" | tee .tagged || true; \
+	 fi
+
+endif
 
 # create a detached signature for a file
 

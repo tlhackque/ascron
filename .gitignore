@@ -7,7 +7,7 @@
 *.log
 *.tdy
 tmp/*
-*.tgz
 *.sig
-*.tar.gz *.tar.xz
+*.tgz *.tar.gz *.tar.xz *tar.lzop *.tar.lzma *.tar.Z *.tar.zst *.tar.bz *.tar.bz2
 ascron-*
+.tagged

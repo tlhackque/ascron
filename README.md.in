@@ -1,0 +1,21 @@
+# ascron - Run cron jobs interactively
+
+When you are developing something to run under `cron`, or just in the course of normal events, things go wrong.
+
+When you want to re-run or test changes, editing the `crontab`, waiting for `crond` to notice, and for the clock to tick over is at least annoying, and often frustrating.  But trying to run the job interactively often runs into trouble, because the environment under `crond` differs greatly from a typical interactive session.
+
+Some of the differences include:
+
+ - The shell (by default `/bin/sh`
+ - The PATH (by default very restricted)
+ - How output is captured and delivered
+ - The defined environment variables
+ - Standard input
+ - Running as another user
+
+`ascron` lets you run a `cron` job **on your terminal** directly from an installed `crontab`, in exactly the same environment as when `cron` runs it.  It enables you to run from an uninstalled `crontab`, so you can have confidence that it will work the first time.  It also enables you to run an arbitrary command _as if_ it was installed in a specific `crontab` for faster turn-around.  All in all, when you finally install your job, there should be no surprises.
+
+`ascron` also assists in finding `cron` jobs and determining the time at which they'll next run.
+
+Brief help (--man for detail):
+
