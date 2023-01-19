@@ -10,7 +10,7 @@ my $copyright =
 use warnings;
 use strict;
 
-our $VERSION = 'V1.0.12';
+our $VERSION = 'V1.0.13';
 
 use Cwd(   qw/realpath getcwd/ );
 use Errno( qw/EAGAIN/ );
@@ -177,8 +177,8 @@ if( $help || $man ) {
         require Pod::Usage;
     } or
         die( "Install Pod::Usage or use 'perldoc $0'\n" );
-    Pod::Usage::pod2usage( 1 )                            if $help;
-    Pod::Usage::pod2usage( -exitval => 0, -verbose => 2 ) if $man;
+    Pod::Usage::pod2usage( 1 )                            if( $help );
+    Pod::Usage::pod2usage( -exitval => 0, -verbose => 2 ) if( $man );
 }
 
 if( $version ) {

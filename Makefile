@@ -15,7 +15,7 @@ man1ext         := .1
 exec_prefix     := $(prefix)
 bindir          := $(exec_prefix)/bin
 
-INSTALL         := install
+INSTALL         := install -p
 INSTALL_PROGRAM := $(INSTALL)
 INSTALL_DATA    := $(INSTALL) -m 644
 
